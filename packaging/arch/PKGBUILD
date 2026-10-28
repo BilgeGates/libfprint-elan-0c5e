@@ -1,0 +1,32 @@
+# Local source recipe: generate the archive with tools/export-arch-source.py.
+# No template operations or PAM hooks.
+pkgname=libfprint-elan-0c5e
+epoch=1
+pkgver=1.94.100
+pkgrel=4
+pkgdesc='Community libfprint adaptation for ELAN 04f3:0c5e firmware 3014 (elanmoc only)'
+arch=('x86_64')
+license=('LGPL-2.1-or-later')
+depends=('glibc' 'libgcc' 'glib2' 'libgusb' 'libusb')
+makedepends=('glib2-devel' 'meson' 'ninja' 'pkgconf' 'json-glib')
+provides=("libfprint=${epoch}:${pkgver}" 'libfprint-2.so')
+conflicts=('libfprint')
+options=('!debug' '!lto')
+source=('libfprint-elan-source.tar.gz')
+sha256sums=('39f35e3bb24010655f3ee771ee23bc86c804fec27a3f1192cedf42905b30dae0')
+build() {
+  arch-meson "$srcdir/libfprint-elan-source" build \
+    -Ddrivers=elanmoc -Ddoc=false -Dgtk-examples=false \
+    -Dinstalled-tests=false -Dintrospection=false \
+    -Dudev_hwdb=disabled -Dudev_rules=disabled
+  meson compile -C build
+}
+check() {
+  meson test -C build fpi-device fpi-ssm fpi-assembling --print-errorlogs
+  meson test -C build --suite elanmoc-legacy --print-errorlogs
+  meson test -C build --suite elanmoc-security --print-errorlogs
+}
+package() {
+  DESTDIR="$pkgdir" meson install -C build --no-rebuild
+  install -Dm644 "$srcdir/libfprint-elan-source/COPYING" "$pkgdir/usr/share/licenses/$pkgname/COPYING"
+}

@@ -1,0 +1,48 @@
+{
+  "project": "libfprint-elan-0c5e",
+  "version": "0.1.0",
+  "target": {
+    "model": "HP ProBook 450 G8",
+    "usb_id": "04f3:0c5e",
+    "firmware": "3014",
+    "dimensions": "79x79",
+    "tested_os": "Arch Linux x86_64"
+  },
+  "upstream": {
+    "url": "https://gitlab.freedesktop.org/libfprint/libfprint",
+    "commit": "6f9479c3d55f847c1b3769f28ceb99227f9858cf",
+    "version": "1.94.100"
+  },
+  "source_policy": "Preserves target wire protocol; hardens identity validation, bounds, error ownership and READY boundary handling. Synthetic fixture lifetime corrected.",
+  "artifacts": {
+    "patches/0001-elan-0c5e-fw3014.patch": {
+      "sha256": "47a079cd7505584a486e5127f367aa21341731cb57315ba26a7c2e406170589a"
+    },
+    "libfprint-elan-source.tar.gz": {
+      "sha256": "39f35e3bb24010655f3ee771ee23bc86c804fec27a3f1192cedf42905b30dae0"
+    }
+  },
+  "later_user_reports": [
+    "KDE deletion and reenrollment successful",
+    "Reboot then password login then fingerprint screen unlock successful"
+  ],
+  "local_audit": {
+    "date": "2026-10-28",
+    "independent": false,
+    "physical_sensor_used": false,
+    "report": "docs/SECURITY-AUDIT.md",
+    "asan_ubsan_lsan_api_scenarios": 26,
+    "parser_mutations": 300608,
+    "hardware_feedback_is_separate": true
+  },
+  "baseline_arch_package": {
+    "name": "libfprint-elan-0c5e",
+    "version": "1:1.94.100-2",
+    "fprintd": "1.94.5-2"
+  },
+  "arch_package": {
+    "version": "1:1.94.100-4",
+    "prebuilt_binary_distributed": false,
+    "hardware_feedback": "Tester confirmed updated driver works on 2026-10-28; no new instrumented transcript supplied."
+  }
+}

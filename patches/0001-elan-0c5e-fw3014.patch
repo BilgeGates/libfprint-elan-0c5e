@@ -1,0 +1,1735 @@
+diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/elanmoc.c
+--- a/libfprint/drivers/elanmoc/elanmoc.c
++++ b/libfprint/drivers/elanmoc/elanmoc.c
+@@ -21,10 +21,12 @@
+ #include "drivers_api.h"
+ #include "fpi-byte-reader.h"
+ #include "elanmoc.h"
++#include "elanmoc-legacy-storage.h"
+ 
+ G_DEFINE_TYPE (FpiDeviceElanmoc, fpi_device_elanmoc, FP_TYPE_DEVICE)
+ 
+ static const FpIdEntry id_table[] = {
++  { .vid = 0x04f3,  .pid = 0x0c5e,  },
+   { .vid = 0x04f3,  .pid = 0x0c7d,  },
+   { .vid = 0x04f3,  .pid = 0x0c7e,  },
+   { .vid = 0x04f3,  .pid = 0x0c82,  },
+@@ -53,6 +55,7 @@
+ typedef struct
+ {
+   SynCmdMsgCallback callback;
++  guint empty_reads;
+ } CommandData;
+ 
+ static uint8_t *
+@@ -89,7 +92,7 @@
+       return;
+     }
+ 
+-  if (buffer_in[0] != 0x40 && buffer_in[1] != 0x00 )
++  if (length_in != 2 || buffer_in[0] != 0x40 || buffer_in[1] != 0x00)
+     {
+       fpi_ssm_mark_failed (self->task_ssm,
+                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -127,6 +130,12 @@
+   /* skip zero length package */
+   if (transfer->actual_length == 0)
+     {
++      if (++data->empty_reads > 3)
++        {
++          fpi_ssm_mark_failed (transfer->ssm, fpi_device_error_new_msg (
++            FP_DEVICE_ERROR_PROTO, "ELAN returned four empty USB replies"));
++          return;
++        }
+       fpi_ssm_jump_to_state (transfer->ssm, ssm_state);
+       return;
+     }
+@@ -197,7 +206,8 @@
+   FpiDeviceElanmoc *self = FPI_DEVICE_ELANMOC (dev);
+   CommandData *data = fpi_ssm_get_data (ssm);
+ 
+-  self->cmd_ssm = NULL;
++  if (self->cmd_ssm == ssm)
++    self->cmd_ssm = NULL;
+ 
+   if (error)
+     {
+@@ -240,6 +250,37 @@
+   fpi_ssm_set_data (self->cmd_ssm, data, (GDestroyNotify) fp_cmd_ssm_done_data_free);
+ 
+   fpi_ssm_start (self->cmd_ssm, fp_cmd_ssm_done);
++}
++
++/* A cancelled host IN transfer does not itself abort the sensor's capture.
++ * Complete cancellation only after the legacy abort OUT transfer finishes.
++ * This command has no reply and does not change stored enrollments. */
++static void
++elanmoc_cancel_done_cb (FpiDeviceElanmoc *self,
++                        uint8_t *buffer_in G_GNUC_UNUSED,
++                        gsize length_in,
++                        GError *error)
++{
++  g_autoptr(GError) cancelled = g_steal_pointer (&self->cancel_error);
++  if (error)
++    fpi_ssm_mark_failed (self->task_ssm, error);
++  else if (length_in != 0)
++    fpi_ssm_mark_failed (self->task_ssm, fpi_device_error_new (FP_DEVICE_ERROR_PROTO));
++  else
++    fpi_ssm_mark_failed (self->task_ssm, g_steal_pointer (&cancelled));
++}
++
++static gboolean
++elanmoc_handle_cancel (FpiDeviceElanmoc *self, GError *error)
++{
++  if (g_usb_device_get_pid (fpi_device_get_usb_device (FP_DEVICE (self))) != 0x0c5e ||
++      !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
++    return FALSE;
++
++  self->cancel_error = error;
++  elanmoc_get_cmd (FP_DEVICE (self), elanmoc_compose_cmd (&elanmoc_above_cmd),
++                   elanmoc_above_cmd.cmd_len, 0, FALSE, elanmoc_cancel_done_cb);
++  return TRUE;
+ }
+ 
+ enum enroll_states {
+@@ -308,7 +349,7 @@
+       return;
+     }
+ 
+-  if (buffer_in[0] != 0x40)
++  if (length_in != 2 || buffer_in[0] != 0x40 || buffer_in[1] > 10)
+     {
+       fpi_ssm_mark_failed (self->task_ssm,
+                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -320,6 +361,27 @@
+                buffer_in[0],
+                buffer_in[1]);
+       self->curr_enrolled = buffer_in[1];
++      if (g_usb_device_get_pid (fpi_device_get_usb_device (FP_DEVICE (self))) == 0x0c5e &&
++          self->curr_enrolled == 0)
++        {
++          FpDevice *device = FP_DEVICE (self);
++          FpiDeviceAction action = fpi_device_get_current_action (device);
++          if (action == FPI_DEVICE_ACTION_VERIFY || action == FPI_DEVICE_ACTION_IDENTIFY)
++            {
++              if (action == FPI_DEVICE_ACTION_VERIFY)
++                {
++                  fpi_device_verify_report (device, FPI_MATCH_FAIL, NULL, NULL);
++                  fpi_device_verify_complete (device, NULL);
++                }
++              else
++                {
++                  fpi_device_identify_report (device, NULL, NULL, NULL);
++                  fpi_device_identify_complete (device, NULL);
++                }
++              fpi_ssm_mark_completed (self->task_ssm);
++              return;
++            }
++        }
+       fpi_ssm_next_state (self->task_ssm);
+     }
+ }
+@@ -336,7 +398,7 @@
+       return;
+     }
+ 
+-  if (buffer_in[0] != 0x40)
++  if (length_in != 2 || buffer_in[0] != 0x40)
+     {
+       fpi_ssm_mark_failed (self->task_ssm,
+                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -368,11 +430,13 @@
+ {
+   if (error)
+     {
++      if (elanmoc_handle_cancel (self, error))
++        return;
+       fpi_ssm_mark_failed (self->task_ssm, error);
+       return;
+     }
+ 
+-  if (buffer_in[0] != 0x40)
++  if (length_in != 2 || buffer_in[0] != 0x40)
+     {
+       fpi_ssm_mark_failed (self->task_ssm,
+                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -391,20 +455,11 @@
+         }
+ 
+       if (self->num_frames == self->max_moc_enroll_time && buffer_in[1] == ELAN_MSG_OK)
+-        {
+-          fpi_ssm_next_state (self->task_ssm);
+-        }
++        fpi_ssm_next_state (self->task_ssm);
+       else if (self->num_frames < self->max_moc_enroll_time)
+-        {
+-          fpi_ssm_jump_to_state (self->task_ssm, MOC_ENROLL_WAIT_FINGER);
+-        }
++        fpi_ssm_jump_to_state (self->task_ssm, MOC_ENROLL_WAIT_FINGER);
+       else
+-        {
+-          fpi_ssm_mark_failed (self->task_ssm,
+-                               fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+-                                                         "Enrollment failed (status 0x%02x)",
+-                                                         buffer_in[1]));
+-        }
++        fpi_ssm_mark_failed (self->task_ssm, error);
+     }
+ }
+ 
+@@ -420,13 +475,7 @@
+       return;
+     }
+ 
+-  if (length_in == 0)
+-    {
+-      fpi_ssm_next_state (self->task_ssm);
+-      return;
+-    }
+-
+-  if (buffer_in[0] != 0x40 && buffer_in[1] != 0x00 )
++  if (length_in != 2 || buffer_in[0] != 0x40 || buffer_in[1] != 0x00)
+     {
+       fpi_ssm_mark_failed (self->task_ssm,
+                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -455,6 +504,24 @@
+       break;
+ 
+     case MOC_ENROLL_REENROLL_CHECK:
++      /*
++       * ELAN 04f3:0c5e firmware 0x3014 does not reply to the
++       * re-enrollment-check command (0x40 ff 22).
++       * Skip this optional step and proceed to normal enrollment.
++       */
++      if (g_usb_device_get_pid (fpi_device_get_usb_device (dev)) == 0x0c5e)
++        {
++          if (self->curr_enrolled >= ELAN_MAX_ENROLL_NUM + 1)
++            {
++              fpi_ssm_mark_failed (
++                  ssm, fpi_device_error_new (FP_DEVICE_ERROR_DATA_FULL));
++              break;
++            }
++          self->num_frames = 0;
++          fp_info ("elanmoc 04f3:0c5e: skipping unsupported re-enroll check");
++          fpi_ssm_next_state (ssm);
++          break;
++        }
+       data = fpi_ssm_get_data (ssm);
+       cmd_buf = elanmoc_compose_cmd (&elanmoc_check_reenroll_cmd);
+       memcpy (cmd_buf + 3, data, ELAN_USERDATE_SIZE);
+@@ -471,9 +538,23 @@
+ 
+     case MOC_ENROLL_COMMIT_RESULT:
+       data = fpi_ssm_get_data (ssm);
+-      cmd_buf = elanmoc_compose_cmd (&elanmoc_enroll_commit_cmd);
+-      memcpy (cmd_buf + 5, data, ELAN_USERDATE_SIZE);
+-      elanmoc_get_cmd (dev, cmd_buf, elanmoc_enroll_commit_cmd.cmd_len, elanmoc_enroll_commit_cmd.resp_len, 0, elanmoc_commit_cb);
++      if (g_usb_device_get_pid (fpi_device_get_usb_device (dev)) == 0x0c5e)
++        {
++          cmd_buf = g_malloc0 (ELAN_LEGACY_DELETE_SIZE);
++          if (elan_legacy_build_identity (0x11, data + 3, data[2], cmd_buf) < 0)
++            {
++              g_free (cmd_buf);
++              fpi_ssm_mark_failed (ssm, fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
++              return;
++            }
++          elanmoc_get_cmd (dev, cmd_buf, ELAN_LEGACY_DELETE_SIZE, 2, FALSE, elanmoc_commit_cb);
++        }
++      else
++        {
++          cmd_buf = elanmoc_compose_cmd (&elanmoc_enroll_commit_cmd);
++          memcpy (cmd_buf + 5, data, ELAN_USERDATE_SIZE);
++          elanmoc_get_cmd (dev, cmd_buf, elanmoc_enroll_commit_cmd.cmd_len, elanmoc_enroll_commit_cmd.resp_len, 0, elanmoc_commit_cb);
++        }
+       break;
+     }
+ }
+@@ -488,6 +569,32 @@
+ 
+   if (error)
+     fpi_device_action_error (dev, error);
++}
++
++/* Validate before calling the core metadata parser, which assumes valid fields. */
++static gboolean
++elanmoc_user_id_valid (const guint8 *userid, gsize length)
++{
++  if (length < 24 || memcmp (userid, "FP1-", 4) != 0 ||
++      memchr (userid, 0, length) ||
++      !g_utf8_validate ((const gchar *) userid, length, NULL) ||
++      userid[12] != '-' || userid[14] != '-' || userid[23] != '-')
++    return FALSE;
++
++  guint ymd = 0;
++  for (gsize i = 4; i < 12; i++)
++    {
++      if (!g_ascii_isdigit (userid[i]))
++        return FALSE;
++      ymd = ymd * 10 + userid[i] - '0';
++    }
++  for (gsize i = 15; i < 23; i++)
++    if (!g_ascii_isxdigit (userid[i]))
++      return FALSE;
++
++  gint finger = g_ascii_xdigit_value (userid[13]);
++  return finger >= FP_FINGER_FIRST && finger <= FP_FINGER_LAST &&
++         (ymd == 0 || g_date_valid_dmy (ymd % 100, (ymd / 100) % 100, ymd / 10000));
+ }
+ 
+ static FpPrint *
+@@ -503,7 +610,7 @@
+   g_autofree gchar *userid_safe = NULL;
+   int userid_len = 0;
+ 
+-  if (buffer_in[0] != 0x43)
++  if (length_in < 5 || buffer_in[0] != 0x43)
+     {
+       g_propagate_error (error,
+                          fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -526,6 +633,14 @@
+       g_propagate_error (error,
+                          fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                    "Packet too short for payload length!"));
++      return NULL;
++    }
++
++  if (userid_len >= 4 && memcmp (buffer_in + 5, "FP1-", 4) == 0 &&
++      !elanmoc_user_id_valid (buffer_in + 5, userid_len))
++    {
++      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
++                           "Malformed Linux fingerprint identity fields");
+       return NULL;
+     }
+ 
+@@ -552,6 +667,93 @@
+   return print;
+ }
+ 
++static FpPrint *
++create_print_from_0c5e_response (FpiDeviceElanmoc *self,
++                                 uint8_t          *buffer_in,
++                                 gsize             length_in,
++                                 GError          **error)
++{
++  FpPrint *print;
++  GVariant *uid;
++  GVariant *data;
++  guint8 userid_len;
++  const guint8 *userid;
++  g_autofree gchar *userid_safe = NULL;
++
++  /* Read only after a successful identify. INFO is not a cold enumeration API. */
++  if ((length_in != ELAN_LEGACY_INFO_SIZE && length_in != ELAN_LEGACY_INFO_FULL_SIZE) ||
++      buffer_in[0] != 0x40 || buffer_in[1] != 0)
++    {
++      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
++                           "Invalid legacy finger-info frame");
++      return NULL;
++    }
++
++  /* An empty entry inside the advertised active bank is inconsistent. Do not
++   * return a truncated successful inventory to fprintd. */
++  gboolean all_zero = TRUE, all_ff = TRUE;
++  for (gsize i = 3; i < length_in; i++)
++    {
++      all_zero &= buffer_in[i] == 0;
++      all_ff &= buffer_in[i] == 0xff;
++    }
++  if (all_zero || all_ff)
++    {
++      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
++                           "Empty identity inside the active record bank");
++      return NULL;
++    }
++
++  /* Binary Windows identities are not Linux authentication identities. */
++  if (memcmp (buffer_in + 7, "FP1-", 4) != 0)
++    return NULL;
++
++  userid_len = buffer_in[6];
++  if (userid_len > ELAN_LEGACY_UID_MAX ||
++      !elanmoc_user_id_valid (buffer_in + 7, userid_len))
++    {
++      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
++                           "Invalid Linux identity in legacy finger-info");
++      return NULL;
++    }
++  userid = buffer_in + 7;
++  userid_safe = g_strndup ((const gchar *) userid, userid_len);
++
++  print = fp_print_new (FP_DEVICE (self));
++
++  uid = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
++                                   userid,
++                                   userid_len,
++                                   1);
++
++  /*
++   * Match the representation produced by the existing elanmoc
++   * enrollment path.
++   */
++  data = g_variant_new ("(yy@ay)",
++                        0,
++                        0,
++                        uid);
++
++  fpi_print_set_type (print, FPI_PRINT_RAW);
++  fpi_print_set_device_stored (print, TRUE);
++
++  g_object_set (print,
++                "fpi-data", data,
++                "description", userid_safe,
++                NULL);
++
++  if (!fpi_print_fill_from_user_id (print, userid_safe))
++    {
++      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
++                           "Unparseable Linux fingerprint identity");
++      g_object_unref (print);
++      return NULL;
++    }
++
++  return print;
++}
++
+ static void
+ elanmoc_get_userid_cb (FpiDeviceElanmoc *self,
+                        uint8_t          *buffer_in,
+@@ -566,7 +768,7 @@
+       return;
+     }
+ 
+-  if (buffer_in[0] != 0x43)
++  if (length_in < 2 || buffer_in[0] != 0x43)
+     {
+       fpi_ssm_mark_failed (self->task_ssm,
+                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -602,6 +804,50 @@
+ }
+ 
+ static void
++elanmoc_get_finger_info (FpDevice *device,
++                         guint8 slot,
++                         SynCmdMsgCallback callback)
++{
++  guint8 *cmd_buf;
++  guint16 pid;
++
++  pid = g_usb_device_get_pid (fpi_device_get_usb_device (device));
++
++  if (pid == 0x0c5e)
++    {
++      cmd_buf = elanmoc_compose_cmd (&elanmoc_legacy_finger_info_cmd);
++
++      /*
++       * Legacy command format:
++       * 40 ff 12 <slot>
++       */
++      cmd_buf[3] = slot;
++
++      fp_info ("elanmoc 04f3:0c5e: requesting legacy finger info for slot %u",
++               slot);
++
++      elanmoc_get_cmd (device,
++                       cmd_buf,
++                       elanmoc_legacy_finger_info_cmd.cmd_len,
++                       elanmoc_legacy_finger_info_cmd.resp_len,
++                       0,
++                       callback);
++    }
++  else
++    {
++      cmd_buf = elanmoc_compose_cmd (&elanmoc_get_userid_cmd);
++      cmd_buf[2] = slot;
++
++      elanmoc_get_cmd (device,
++                       cmd_buf,
++                       elanmoc_get_userid_cmd.cmd_len,
++                       elanmoc_get_userid_cmd.resp_len,
++                       0,
++                       callback);
++    }
++}
++
++static void
+ elan_list_run_state (FpiSsm *ssm, FpDevice *dev)
+ {
+   FpiDeviceElanmoc *self = FPI_DEVICE_ELANMOC (dev);
+@@ -613,12 +859,13 @@
+       cmd_buf = elanmoc_compose_cmd (&enrolled_number_cmd);
+       elanmoc_get_cmd (dev, cmd_buf, enrolled_number_cmd.cmd_len, enrolled_number_cmd.resp_len, 0, elanmoc_get_enrolled_cb);
+       self->list_index = 0;
++      self->cmd_retry_cnt = 3;
+       break;
+ 
+     case MOC_LIST_GET_FINGER:
+-      cmd_buf = elanmoc_compose_cmd (&elanmoc_get_userid_cmd);
+-      cmd_buf[2] = self->list_index;
+-      elanmoc_get_cmd (dev, cmd_buf, elanmoc_get_userid_cmd.cmd_len, elanmoc_get_userid_cmd.resp_len, 0, elanmoc_get_userid_cb);
++      elanmoc_get_finger_info (dev,
++                               self->list_index,
++                               elanmoc_get_userid_cb);
+       break;
+     }
+ }
+@@ -627,6 +874,13 @@
+ elanmoc_list (FpDevice *device)
+ {
+   FpiDeviceElanmoc *self = FPI_DEVICE_ELANMOC (device);
++
++  if (g_usb_device_get_pid (fpi_device_get_usb_device (device)) == 0x0c5e)
++    {
++      fpi_device_list_complete (device, NULL,
++                                fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
++      return;
++    }
+ 
+   self->list_result = g_ptr_array_new_with_free_func (g_object_unref);
+   self->task_ssm = fpi_ssm_new (FP_DEVICE (self),
+@@ -649,6 +903,7 @@
+ {
+   FpDevice *device = FP_DEVICE (self);
+   FpPrint *print = NULL;
++  FpPrint *verify_print = NULL;
+   GPtrArray *prints;
+   gboolean found = FALSE;
+   guint index;
+@@ -659,7 +914,9 @@
+       return;
+     }
+ 
+-  if (buffer_in[0] != 0x43)
++  if (length_in < 2 || buffer_in[0] !=
++      (g_usb_device_get_pid (
++         fpi_device_get_usb_device (device)) == 0x0c5e ? 0x40 : 0x43))
+     {
+       fpi_ssm_mark_failed (self->task_ssm,
+                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -667,28 +924,91 @@
+       return;
+     }
+ 
+-  print = create_print_from_response (self, buffer_in, length_in, &error);
++  if (g_usb_device_get_pid (
++        fpi_device_get_usb_device (FP_DEVICE (self))) == 0x0c5e)
++    print = create_print_from_0c5e_response (self,
++                                             buffer_in,
++                                             length_in,
++                                             &error);
++  else
++    print = create_print_from_response (self,
++                                        buffer_in,
++                                        length_in,
++                                        &error);
+ 
+   if (!print)
+     {
++      /*
++       * A 0c5e sensor may contain fingerprints enrolled by Windows
++       * or another implementation. The sensor can legitimately match
++       * one of those slots, but it must never authenticate a Linux
++       * libfprint identity.
++       */
++      if (!error &&
++          g_usb_device_get_pid (
++            fpi_device_get_usb_device (FP_DEVICE (self))) == 0x0c5e)
++        {
++          fp_info ("0c5e: matched fingerprint is not managed by libfprint");
++
++          if (fpi_device_get_current_action (device) ==
++              FPI_DEVICE_ACTION_IDENTIFY)
++            {
++              fpi_device_identify_report (device,
++                                          NULL,
++                                          NULL,
++                                          NULL);
++              fpi_device_identify_complete (device, NULL);
++            }
++          else
++            {
++              fpi_device_verify_report (device,
++                                        FPI_MATCH_FAIL,
++                                        NULL,
++                                        NULL);
++              fpi_device_verify_complete (device, NULL);
++            }
++
++          fpi_ssm_next_state (self->task_ssm);
++          return;
++        }
++
+       fpi_ssm_mark_failed (self->task_ssm, error);
+       return;
+     }
+ 
+-  fp_info ("Verify/Identify successful for: %s", fp_print_get_description (print));
+-
+-  fpi_device_get_identify_data (device, &prints);
+-  found = g_ptr_array_find_with_equal_func (prints,
+-                                            print,
+-                                            (GEqualFunc) fp_print_equal,
+-                                            &index);
+-
+-  if (found)
+-    fpi_device_identify_report (device, g_ptr_array_index (prints, index), print, NULL);
++  fp_info ("Sensor identity read; checking the requested Linux reference");
++
++  if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_IDENTIFY)
++    {
++      fpi_device_get_identify_data (device, &prints);
++      found = g_ptr_array_find_with_equal_func (prints,
++                                                print,
++                                                (GEqualFunc) fp_print_equal,
++                                                &index);
++
++      if (found)
++        fpi_device_identify_report (device, g_ptr_array_index (prints, index), print, NULL);
++      else
++        fpi_device_identify_report (device, NULL, print, NULL);
++
++      fpi_device_identify_complete (device, NULL);
++    }
+   else
+-    fpi_device_identify_report (device, NULL, print, NULL);
+-
+-  fpi_device_identify_complete (device, NULL);
++    {
++      fpi_device_get_verify_data (device, &verify_print);
++
++      if (fp_print_equal (verify_print, print))
++        fpi_device_verify_report (device, FPI_MATCH_SUCCESS, print, NULL);
++      else
++        fpi_device_verify_report (device, FPI_MATCH_FAIL, print, NULL);
++      fpi_device_verify_complete (device, NULL);
++    }
++
++  /*
++   * The matched-slot finger-info request is asynchronous.
++   * Finish IDENTIFY_NUM_STATES only after reporting the final result.
++   */
++  fpi_ssm_next_state (self->task_ssm);
+ }
+ 
+ static void
+@@ -696,11 +1016,13 @@
+                         int data, GError *error)
+ {
+   FpDevice *device = FP_DEVICE (self);
+-  guint8 *cmd_buf = NULL;
+-
+-  if (error)
+-    {
+-      fpi_device_identify_complete (device, error);
++
++  if (error)
++    {
++      if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY)
++        fpi_device_verify_complete (device, error);
++      else
++        fpi_device_identify_complete (device, error);
+       return;
+     }
+ 
+@@ -710,8 +1032,16 @@
+       {
+         if (data == ELAN_MSG_VERIFY_ERR)
+           {
+-            fpi_device_identify_report (device, NULL, NULL, NULL);
+-            fpi_device_identify_complete (device, NULL);
++            if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY)
++              {
++                fpi_device_verify_report (device, FPI_MATCH_FAIL, NULL, NULL);
++                fpi_device_verify_complete (device, NULL);
++              }
++            else
++              {
++                fpi_device_identify_report (device, NULL, NULL, NULL);
++                fpi_device_identify_complete (device, NULL);
++              }
+           }
+         else
+           {
+@@ -730,24 +1060,35 @@
+                 retry_error = fpi_device_retry_new (FP_DEVICE_RETRY_GENERAL);
+               }
+ 
+-            fpi_device_identify_report (device, NULL, NULL, retry_error);
+-            fpi_device_identify_complete (device, NULL);
++            if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY)
++              {
++                fpi_device_verify_report (device, FPI_MATCH_ERROR, NULL, retry_error);
++                fpi_device_verify_complete (device, NULL);
++              }
++            else
++              {
++                fpi_device_identify_report (device, NULL, NULL, retry_error);
++                fpi_device_identify_complete (device, NULL);
++              }
+           }
+         break;
+       }
+ 
+     case RSP_VERIFY_OK:
+       {
+-        fp_dbg ("Identify was successful! for user: %d mesg_code: %d ", data, verify_status_id);
+-        cmd_buf = elanmoc_compose_cmd (&elanmoc_get_userid_cmd);
+-        cmd_buf[2] = data;
+-        elanmoc_get_cmd (device, cmd_buf, elanmoc_get_userid_cmd.cmd_len, elanmoc_get_userid_cmd.resp_len, 0, elanmoc_match_report_cb);
++        fp_dbg ("Verify was successful! for user: %d mesg_code: %d ",
++                data, verify_status_id);
++
++        elanmoc_get_finger_info (device,
++                                 data,
++                                 elanmoc_match_report_cb);
+         break;
+       }
+     }
+ }
+ 
+ enum identify_states {
++  IDENTIFY_GET_ENROLLED,
+   IDENTIFY_SET_MODE,
+   IDENTIFY_WAIT_FINGER,
+   IDENTIFY_NUM_STATES,
+@@ -761,19 +1102,48 @@
+ {
+   if (error)
+     {
++      if (elanmoc_handle_cancel (self, error))
++        return;
+       fpi_ssm_mark_failed (self->task_ssm, error);
+       return;
+     }
+ 
++  if (length_in != 2 || buffer_in[0] != 0x40)
++    {
++      fpi_ssm_mark_failed (self->task_ssm, fpi_device_error_new_msg (
++        FP_DEVICE_ERROR_PROTO, "Malformed ELAN elanmoc_identify_cb reply (%zu bytes)", length_in));
++      return;
++    }
++
++
+   if (buffer_in[1] == ELAN_MSG_VERIFY_ERR)
+-    identify_status_report (self, RSP_VERIFY_FAIL,
+-                            buffer_in[1], error);
+-  else if (buffer_in[1] <= ELAN_MAX_ENROLL_NUM)
+-    identify_status_report (self, RSP_VERIFY_OK, buffer_in[1], error);
+-  else
+-    identify_status_report (self, RSP_VERIFY_FAIL, buffer_in[1], error);
++    {
++      identify_status_report (self, RSP_VERIFY_FAIL,
++                              buffer_in[1], error);
++
++      fpi_ssm_next_state (self->task_ssm);
++      return;
++    }
++
++  if (buffer_in[1] <= ELAN_MAX_ENROLL_NUM)
++    {
++      /*
++       * Successful sensor-side match.
++       *
++       * identify_status_report() starts an asynchronous finger-info
++       * request. Do NOT complete IDENTIFY_NUM_STATES yet; the
++       * elanmoc_match_report_cb() callback will finish the SSM after
++       * the matched slot's identity has been processed.
++       */
++      identify_status_report (self, RSP_VERIFY_OK,
++                              buffer_in[1], error);
++      return;
++    }
++
++  identify_status_report (self, RSP_VERIFY_FAIL,
++                          buffer_in[1], error);
++
+   fpi_ssm_next_state (self->task_ssm);
+-
+ }
+ 
+ static void
+@@ -784,6 +1154,17 @@
+   fp_info ("elanmoc %s ", __func__);
+   switch (fpi_ssm_get_cur_state (ssm))
+     {
++    case IDENTIFY_GET_ENROLLED:
++      if (g_usb_device_get_pid (fpi_device_get_usb_device (dev)) != 0x0c5e)
++        {
++          fpi_ssm_next_state (ssm);
++          break;
++        }
++      cmd_buf = elanmoc_compose_cmd (&enrolled_number_cmd);
++      elanmoc_get_cmd (dev, cmd_buf, enrolled_number_cmd.cmd_len,
++                       enrolled_number_cmd.resp_len, FALSE, elanmoc_get_enrolled_cb);
++      break;
++
+     case IDENTIFY_SET_MODE:
+       fp_info ("elanmoc %s IDENTIFY_SET_MODE", __func__);
+       cmd_buf = elanmoc_compose_cmd (&elanmoc_set_mod_cmd);
+@@ -792,9 +1173,40 @@
+       break;
+ 
+     case IDENTIFY_WAIT_FINGER:
+-      fp_info ("elanmoc %s IDENTIFY_WAIT_FINGER", __func__);
+-      cmd_buf = elanmoc_compose_cmd (&elanmoc_verify_cmd);
+-      elanmoc_get_cmd (dev, cmd_buf, elanmoc_verify_cmd.cmd_len, elanmoc_verify_cmd.resp_len, 1, elanmoc_identify_cb);
++      fp_info ("elanmoc %s VERIFY_WAIT_FINGER", __func__);
++
++      if (g_usb_device_get_pid (
++            fpi_device_get_usb_device (dev)) == 0x0c5e)
++        {
++          /*
++           * ELAN 04f3:0c5e uses the older ARM-M4 identify
++           * command: 40 ff 03.
++           */
++          fp_info ("elanmoc 04f3:0c5e: using legacy identify command");
++
++          cmd_buf = elanmoc_compose_cmd (
++            &elanmoc_legacy_identify_cmd);
++
++          elanmoc_get_cmd (
++            dev,
++            cmd_buf,
++            elanmoc_legacy_identify_cmd.cmd_len,
++            elanmoc_legacy_identify_cmd.resp_len,
++            1,
++            elanmoc_identify_cb);
++        }
++      else
++        {
++          cmd_buf = elanmoc_compose_cmd (&elanmoc_verify_cmd);
++
++          elanmoc_get_cmd (
++            dev,
++            cmd_buf,
++            elanmoc_verify_cmd.cmd_len,
++            elanmoc_verify_cmd.resp_len,
++            1,
++            elanmoc_identify_cb);
++        }
+       break;
+     }
+ }
+@@ -813,6 +1225,14 @@
+   fpi_device_get_enroll_data (device, &print);
+   user_id = fpi_print_generate_user_id (print);
+   user_id_len = strlen (user_id);
++  if (g_usb_device_get_pid (fpi_device_get_usb_device (device)) == 0x0c5e &&
++      user_id_len > ELAN_LEGACY_UID_MAX)
++    {
++      g_free (userdata);
++      fpi_device_enroll_complete (device, NULL,
++                                  fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
++      return;
++    }
+   user_id_len = MIN (ELAN_MAX_USER_ID_LEN, user_id_len);
+ 
+   uid = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
+@@ -851,7 +1271,7 @@
+       fpi_ssm_mark_failed (self->task_ssm, error);
+       return;
+     }
+-  if (buffer_in[0] != 0x40 && buffer_in[1] != 0x00)
++  if (length_in < 2 || buffer_in[0] != 0x40 || buffer_in[1] != 0x00)
+     {
+       fpi_ssm_mark_failed (self->task_ssm,
+                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -875,9 +1295,122 @@
+     case DELETE_SEND_CMD:
+       cmd_buf = elanmoc_compose_cmd (&elanmoc_delete_cmd);
+       memcpy (cmd_buf + 3, data, ELAN_USERDATE_SIZE);
+-      elanmoc_get_cmd (dev, cmd_buf, elanmoc_delete_cmd.cmd_len, elanmoc_delete_cmd.resp_len, 0, elanmoc_delete_cb);
+-      break;
+-    }
++      elanmoc_get_cmd (dev, cmd_buf, elanmoc_delete_cmd.cmd_len,
++                       elanmoc_delete_cmd.resp_len, 0,
++                       elanmoc_delete_cb);
++      break;
++    }
++}
++
++enum legacy_delete_states {
++  LEGACY_DELETE_COUNT_BEFORE,
++  LEGACY_DELETE_SEND,
++  LEGACY_DELETE_COUNT_AFTER,
++  LEGACY_DELETE_NUM_STATES,
++};
++
++typedef struct
++{
++  guint8 uid[ELAN_LEGACY_UID_MAX];
++  gsize uid_len;
++  guint count_before;
++} LegacyDeleteData;
++
++static void
++elanmoc_legacy_delete_count_cb (FpiDeviceElanmoc *self,
++                                uint8_t *buffer, gsize length, GError *error)
++{
++  FpiSsm *ssm = self->task_ssm;
++  LegacyDeleteData *data = fpi_ssm_get_data (ssm);
++  if (error)
++    { fpi_ssm_mark_failed (ssm, error); return; }
++  if (length != 2 || buffer[0] != 0x40 || buffer[1] > 10)
++    { fpi_ssm_mark_failed (ssm, fpi_device_error_new (FP_DEVICE_ERROR_PROTO)); return; }
++  if (fpi_ssm_get_cur_state (ssm) == LEGACY_DELETE_COUNT_BEFORE)
++    {
++      data->count_before = buffer[1];
++      if (data->count_before == 0)
++        { fpi_ssm_mark_failed (ssm, fpi_device_error_new (FP_DEVICE_ERROR_DATA_NOT_FOUND)); return; }
++      fpi_ssm_next_state (ssm);
++      return;
++    }
++  if (buffer[1] + 1 != data->count_before)
++    {
++      fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
++        FP_DEVICE_ERROR_PROTO, "Deletion did not decrease the active count by one"));
++      return;
++    }
++  fpi_device_delete_complete (FP_DEVICE (self), NULL);
++  fpi_ssm_mark_completed (ssm);
++}
++
++static void
++elanmoc_legacy_delete_ack_cb (FpiDeviceElanmoc *self,
++                              uint8_t *buffer, gsize length, GError *error)
++{
++  if (error)
++    { fpi_ssm_mark_failed (self->task_ssm, error); return; }
++  if (length != 2 || buffer[0] != 0x40 || buffer[1] != 0)
++    {
++      fpi_ssm_mark_failed (self->task_ssm, fpi_device_error_new (
++        length == 2 && buffer[0] == 0x40 && buffer[1] == 0xfe ?
++        FP_DEVICE_ERROR_DATA_NOT_FOUND : FP_DEVICE_ERROR_PROTO));
++      return;
++    }
++  fpi_ssm_next_state (self->task_ssm);
++}
++
++static void
++elanmoc_legacy_delete_run_state (FpiSsm *ssm, FpDevice *device)
++{
++  LegacyDeleteData *data = fpi_ssm_get_data (ssm);
++  switch (fpi_ssm_get_cur_state (ssm))
++    {
++    case LEGACY_DELETE_COUNT_BEFORE:
++    case LEGACY_DELETE_COUNT_AFTER:
++      elanmoc_get_cmd (device, elanmoc_compose_cmd (&enrolled_number_cmd),
++                       enrolled_number_cmd.cmd_len, enrolled_number_cmd.resp_len,
++                       FALSE, elanmoc_legacy_delete_count_cb);
++      break;
++    case LEGACY_DELETE_SEND:
++      {
++        guint8 *cmd = g_malloc0 (ELAN_LEGACY_DELETE_SIZE);
++        if (elan_legacy_build_identity (0x13, data->uid, data->uid_len, cmd) < 0)
++          {
++            g_free (cmd);
++            fpi_ssm_mark_failed (ssm, fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
++            return;
++          }
++        elanmoc_get_cmd (device, cmd, ELAN_LEGACY_DELETE_SIZE, 2, FALSE,
++                         elanmoc_legacy_delete_ack_cb);
++        break;
++      }
++    }
++}
++
++static void
++elanmoc_legacy_delete_start (FpDevice *device, GVariant *print_data)
++{
++  FpiDeviceElanmoc *self = FPI_DEVICE_ELANMOC (device);
++  g_autoptr(GVariant) uid_variant = NULL;
++  guint8 first, second;
++  gsize uid_len;
++  g_variant_get (print_data, "(yy@ay)", &first, &second, &uid_variant);
++  const guint8 *uid = g_variant_get_fixed_array (uid_variant, &uid_len, 1);
++  guint8 frame[ELAN_LEGACY_DELETE_SIZE];
++  if (first != 0 || second != 0 ||
++      elan_legacy_build_identity (0x13, uid, uid_len, frame) < 0)
++    {
++      fpi_device_delete_complete (device, fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
++      return;
++    }
++  LegacyDeleteData *data = g_new0 (LegacyDeleteData, 1);
++  memcpy (data->uid, uid, uid_len);
++  data->uid_len = uid_len;
++  self->task_ssm = fpi_ssm_new (device, elanmoc_legacy_delete_run_state,
++                                LEGACY_DELETE_NUM_STATES);
++  fpi_ssm_set_data (self->task_ssm, data, g_free);
++  fpi_ssm_start (self->task_ssm, task_ssm_done);
+ }
+ 
+ static void
+@@ -895,10 +1428,16 @@
+   fpi_device_get_delete_data (device, &print);
+   g_object_get (print, "fpi-data", &data, NULL);
+ 
+-  if (!g_variant_check_format_string (data, "(yy@ay)", FALSE))
++  if (!data || !g_variant_check_format_string (data, "(yy@ay)", FALSE))
+     {
+       fpi_device_delete_complete (device,
+                                   fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
++      return;
++    }
++
++  if (g_usb_device_get_pid (fpi_device_get_usb_device (device)) == 0x0c5e)
++    {
++      elanmoc_legacy_delete_start (device, data);
+       return;
+     }
+ 
+@@ -939,6 +1478,7 @@
+ {
+   FpiDeviceElanmoc *self = FPI_DEVICE_ELANMOC (dev);
+ 
++  self->task_ssm = NULL;
+   if (error)
+     g_usb_device_release_interface (fpi_device_get_usb_device (dev),
+                                     0, 0, NULL);
+@@ -958,8 +1498,24 @@
+       return;
+     }
+ 
++  if (length_in != 2)
++    {
++      fpi_ssm_mark_failed (self->task_ssm, fpi_device_error_new_msg (
++        FP_DEVICE_ERROR_PROTO, "Malformed ELAN elanmoc_cmd_ver_cb reply (%zu bytes)", length_in));
++      return;
++    }
++
++
+   self->fw_ver = (buffer_in[0] << 8 | buffer_in[1]);
+   fp_info ("elanmoc  FW Version %x ", self->fw_ver);
++  if (g_usb_device_get_pid (fpi_device_get_usb_device (FP_DEVICE (self))) == 0x0c5e &&
++      self->fw_ver != 0x3014)
++    {
++      fpi_ssm_mark_failed (self->task_ssm, fpi_device_error_new_msg (
++        FP_DEVICE_ERROR_NOT_SUPPORTED, "Legacy storage protocol not validated for firmware %04x",
++        self->fw_ver));
++      return;
++    }
+   fpi_ssm_next_state (self->task_ssm);
+ }
+ 
+@@ -975,8 +1531,23 @@
+       return;
+     }
+ 
++  if (length_in != 4)
++    {
++      fpi_ssm_mark_failed (self->task_ssm, fpi_device_error_new_msg (
++        FP_DEVICE_ERROR_PROTO, "Malformed ELAN elanmoc_cmd_dim_cb reply (%zu bytes)", length_in));
++      return;
++    }
++
++
+   self->x_trace = buffer_in[0];
+   self->y_trace = buffer_in[2];
++  if (g_usb_device_get_pid (fpi_device_get_usb_device (FP_DEVICE (self))) == 0x0c5e &&
++      memcmp (buffer_in, "\x4f\x00\x4f\x00", 4) != 0)
++    {
++      fpi_ssm_mark_failed (self->task_ssm, fpi_device_error_new_msg (
++        FP_DEVICE_ERROR_NOT_SUPPORTED, "Unvalidated legacy sensor dimensions"));
++      return;
++    }
+   fp_info ("elanmoc last_read DIM 0x%.2X(%d) 0x%.2X(%d)", self->x_trace, self->x_trace,
+            self->y_trace, self->y_trace);
+   fpi_ssm_next_state (self->task_ssm);
+@@ -996,6 +1567,14 @@
+       return;
+     }
+ 
++  if (length_in != 2 || buffer_in[0] != 0x40)
++    {
++      fpi_ssm_mark_failed (self->task_ssm, fpi_device_error_new_msg (
++        FP_DEVICE_ERROR_PROTO, "Malformed ELAN elanmoc_get_status_cb reply (%zu bytes)", length_in));
++      return;
++    }
++
++
+   if (buffer_in[1] != 0x03 && self->cmd_retry_cnt != 0)
+     {
+       self->cmd_retry_cnt--;
+@@ -1004,7 +1583,7 @@
+     }
+   else
+     {
+-      if(self->cmd_retry_cnt == 0)
++      if (buffer_in[1] != 0x03)
+         {
+           fpi_ssm_mark_failed (self->task_ssm,
+                                fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -1054,15 +1633,13 @@
+ }
+ 
+ static void
+-elanmoc_open (FpDevice *device)
++elanmoc_open_after_reset (FpDevice *device,
++                          gpointer  user_data)
+ {
+   FpiDeviceElanmoc *self = FPI_DEVICE_ELANMOC (device);
+   GError *error = NULL;
+   gint productid = 0;
+ 
+-  if (!g_usb_device_reset (fpi_device_get_usb_device (device), &error))
+-    goto error;
+-
+   if (!g_usb_device_claim_interface (fpi_device_get_usb_device (device), 0, 0, &error))
+     goto error;
+ 
+@@ -1097,13 +1674,42 @@
+ }
+ 
+ static void
++elanmoc_open (FpDevice *device)
++{
++  GError *error = NULL;
++  guint16 pid;
++
++  if (!g_usb_device_reset (fpi_device_get_usb_device (device), &error))
++    {
++      fpi_device_open_complete (device, error);
++      return;
++    }
++
++  pid = g_usb_device_get_pid (fpi_device_get_usb_device (device));
++
++  if (pid == 0x0c5e)
++    {
++      fp_info ("elanmoc 04f3:0c5e: waiting for firmware after USB reset");
++      fpi_device_add_timeout (device, ELAN_LEGACY_RESET_DELAY_MS,
++                              elanmoc_open_after_reset,
++                              NULL, NULL);
++      return;
++    }
++
++  elanmoc_open_after_reset (device, NULL);
++}
++
++static void
+ task_ssm_exit_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+ {
+   FpiDeviceElanmoc *self = FPI_DEVICE_ELANMOC (dev);
+-
+-  g_usb_device_release_interface (fpi_device_get_usb_device (FP_DEVICE (self)), 0, 0, &error);
+-  fpi_device_close_complete (FP_DEVICE (self), error);
++  g_autoptr(GError) release_error = NULL;
++
+   self->task_ssm = NULL;
++  /* A failed abort already owns an error. Never pass it as an output GError. */
++  g_usb_device_release_interface (fpi_device_get_usb_device (dev), 0, 0,
++                                  &release_error);
++  fpi_device_close_complete (dev, error ? error : g_steal_pointer (&release_error));
+ }
+ 
+ static void
+@@ -1128,6 +1734,14 @@
+   fp_info ("Elanmoc dev_exit");
+   self->task_ssm = fpi_ssm_new (FP_DEVICE (self), dev_exit_handler, DEV_EXIT_STATES);
+   fpi_ssm_start (self->task_ssm, task_ssm_exit_done);
++}
++
++static void
++elanmoc_probe (FpDevice *device)
++{
++  if (g_usb_device_get_pid (fpi_device_get_usb_device (device)) == 0x0c5e)
++    fpi_device_update_features (device, FP_DEVICE_FEATURE_STORAGE_LIST, 0);
++  fpi_device_probe_complete (device, NULL, NULL, NULL);
+ }
+ 
+ static void
+@@ -1150,8 +1764,10 @@
+   dev_class->nr_enroll_stages = ELAN_MOC_ENROLL_TIMES;
+   dev_class->temp_hot_seconds = -1;
+ 
++  dev_class->probe = elanmoc_probe;
+   dev_class->open = elanmoc_open;
+   dev_class->close = elanmoc_close;
++  dev_class->verify = elanmoc_identify;
+   dev_class->enroll = elanmoc_enroll;
+   dev_class->identify = elanmoc_identify;
+   dev_class->delete = elanmoc_delete_print;
+diff --git a/libfprint/drivers/elanmoc/elanmoc.h b/libfprint/drivers/elanmoc/elanmoc.h
+--- a/libfprint/drivers/elanmoc/elanmoc.h
++++ b/libfprint/drivers/elanmoc/elanmoc.h
+@@ -35,6 +35,8 @@
+ #define ELAN_EP_IMG_IN (0x2 | LIBUSB_ENDPOINT_IN)
+ 
+ #define ELAN_MOC_CMD_TIMEOUT 5000
++/* Conservative target bring-up delay; the minimum required time is unmeasured. */
++#define ELAN_LEGACY_RESET_DELAY_MS 2000
+ #define ELAN_MOC_CAL_RETRY 500
+ #define ELAN_MOC_ENROLL_TIMES 9
+ #define ELAN_MAX_USER_ID_LEN 92
+@@ -91,6 +93,19 @@
+   .resp_len = 2,
+ };
+ 
++/*
++ * Legacy ARM-M4 identify command.
++ * Used by ELAN 04f3:0c5e.
++ *
++ * Response byte 1 contains either the matched slot or
++ * a fingerprint status/error code.
++ */
++static const struct elanmoc_cmd elanmoc_legacy_identify_cmd = {
++  .cmd_header = {0x40, 0xff, 0x03},
++  .cmd_len = 3,
++  .resp_len = 2,
++};
++
+ static const struct elanmoc_cmd elanmoc_above_cmd = {
+   .cmd_header = {0x40, 0xff, 0x02},
+   .cmd_len = 3,
+@@ -125,6 +140,16 @@
+   .cmd_header = {0x43, 0x21, 0x00},
+   .cmd_len = 3,
+   .resp_len = 97,
++};
++
++/*
++ * Legacy ARM-M4 finger-info command.
++ * Used by ELAN 04f3:0c5e / firmware 0x3014.
++ */
++static const struct elanmoc_cmd elanmoc_legacy_finger_info_cmd = {
++  .cmd_header = {0x40, 0xff, 0x12},
++  .cmd_len = 4,
++  .resp_len = 71,
+ };
+ 
+ static const struct elanmoc_cmd elanmoc_set_mod_cmd = {
+@@ -193,4 +218,5 @@
+   int             cmd_retry_cnt;
+   int             list_index;
+   GPtrArray      *list_result;
+-};
++  GError         *cancel_error;
++};
+diff --git a/libfprint/drivers/elanmoc/elanmoc-legacy-storage.h b/libfprint/drivers/elanmoc/elanmoc-legacy-storage.h
+new file mode 100644
+--- /dev/null
++++ b/libfprint/drivers/elanmoc/elanmoc-legacy-storage.h
+@@ -0,0 +1,33 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Independently written legacy identity frame encoder. Wire length checked
++ * against HP SP152998. This does not enumerate or export biometric templates.
++ */
++#pragma once
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++#define ELAN_LEGACY_INFO_SIZE 64
++#define ELAN_LEGACY_INFO_FULL_SIZE 71
++#define ELAN_LEGACY_UID_MAX 57
++#define ELAN_LEGACY_DELETE_SIZE 72
++
++/* This driver's identity is four zero bytes, UID length, UID, zero padding.
++ * Only its own FP1 identity format is supported. Never substitute a slot tag
++ * or retry using a clear-all command. Validation never partially writes out.
++ */
++static inline int
++elan_legacy_build_identity (uint8_t opcode, const uint8_t *uid, size_t uid_size,
++                            uint8_t output[ELAN_LEGACY_DELETE_SIZE])
++{
++  if ((opcode != 0x11 && opcode != 0x13) || uid_size < 24 ||
++      uid_size > ELAN_LEGACY_UID_MAX || memcmp (uid, "FP1-", 4) ||
++      memchr (uid, 0, uid_size))
++    return -1;
++  memset (output, 0, ELAN_LEGACY_DELETE_SIZE);
++  output[0] = 0x40;
++  output[1] = 0xff;
++  output[2] = opcode;
++  output[7] = (uint8_t) uid_size;
++  memcpy (output + 8, uid, uid_size);
++  return 0;
++}
+diff --git a/libfprint/fpi-device.c b/libfprint/fpi-device.c
+--- a/libfprint/fpi-device.c
++++ b/libfprint/fpi-device.c
+@@ -1842,6 +1842,11 @@
+     {
+     case FP_DEVICE_TYPE_USB:
+       {
++#if G_USB_CHECK_VERSION(0, 4, 0)
++        /* JSON-emulated devices have no physical parent/sysfs attributes. */
++        if (g_usb_device_is_emulated (priv->usb_device))
++          break;
++#endif
+         g_autoptr(GString) ports = NULL;
+         g_autoptr(GUsbDevice) dev = NULL;
+         const char *wakeup_command = enabled ? "enabled" : "disabled";
+diff --git a/libfprint/fprint-list-udev-hwdb.c b/libfprint/fprint-list-udev-hwdb.c
+--- a/libfprint/fprint-list-udev-hwdb.c
++++ b/libfprint/fprint-list-udev-hwdb.c
+@@ -44,7 +44,6 @@
+   { .vid = 0x04f3, .pid = 0x0c4c },
+   { .vid = 0x04f3, .pid = 0x0c57 },
+   { .vid = 0x04f3, .pid = 0x0c5a },
+-  { .vid = 0x04f3, .pid = 0x0c5e },
+   { .vid = 0x04f3, .pid = 0x0c60 },
+   { .vid = 0x04f3, .pid = 0x0c6c },
+   { .vid = 0x04f3, .pid = 0x0c70 },
+diff --git a/tests/meson.build b/tests/meson.build
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -469,3 +469,44 @@
+             'LIBFPRINT_TEST_WRAPPER=' + ' '.join(libfprint_wrapper),
+         ])
+ endif
++
++# Legacy ELAN API tests use synthetic GUsb devices, not physical USB.
++# JSON emulation requires GUsb 0.4; sanitizers must also be available.
++if 'elanmoc' in supported_drivers and gusb_dep.version().version_compare('>= 0.4.0')
++    legacy_json_dep = dependency('json-glib-1.0', required: false)
++    legacy_sanitizers = '-fsanitize=address,undefined'
++    if legacy_json_dep.found() and cc.has_argument(legacy_sanitizers) and cc.has_link_argument(legacy_sanitizers)
++        elanmoc_legacy_api_test = executable('test-elanmoc-legacy-api',
++            sources: ['test-elanmoc-legacy-api.c', '../libfprint/drivers/elanmoc/elanmoc.c'],
++            dependencies: [libfprint_private_dep, legacy_json_dep],
++            c_args: [legacy_sanitizers, '-g'],
++            link_args: [legacy_sanitizers])
++        elanmoc_security_test = executable('test-elanmoc-security',
++            sources: ['test-elanmoc-security.c'],
++            dependencies: [libfprint_private_dep, legacy_json_dep],
++            c_args: [legacy_sanitizers, '-g'],
++            link_args: [legacy_sanitizers])
++        foreach scenario : [
++            'normal', 'info64', 'info-rejected', 'short-info',
++            'commit-refused', 'short-commit-out', 'delete-refused', 'delete-no-effect',
++            'wrong-fw', 'wrong-dim', 'short-mode', 'bad-count',
++            'ready-last', 'long-user', 'wrong-uid', 'foreign-info',
++            'bad-date', 'bad-utf8', 'long-info-uid', 'nul-info-uid',
++            'empty-info', 'abort-failed', 'short-delete-out', 'real-cancel',
++            'close-out-error', 'stress',
++        ]
++            test('elanmoc-legacy-api-' + scenario, elanmoc_legacy_api_test,
++                args: [scenario],
++                env: ['ASAN_OPTIONS=detect_leaks=0', 'G_DEBUG=fatal-warnings'],
++                suite: ['unit-tests', 'elanmoc-legacy'], timeout: 30)
++        endforeach
++        foreach scenario : ['modern-short', 'modern-date', 'all']
++            test('elanmoc-security-' + scenario, elanmoc_security_test,
++                args: [scenario],
++                env: ['ASAN_OPTIONS=detect_leaks=0', 'G_DEBUG=fatal-warnings'],
++                suite: ['unit-tests', 'elanmoc-security'], timeout: 60)
++        endforeach
++    else
++        warning('Legacy ELAN API tests need JSON-GLib and ASan/UBSan support')
++    endif
++endif
+diff --git a/tests/test-elanmoc-legacy-api.c b/tests/test-elanmoc-legacy-api.c
+new file mode 100644
+--- /dev/null
++++ b/tests/test-elanmoc-legacy-api.c
+@@ -0,0 +1,268 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Real driver + public API, synthetic GUsb only. No libusb initialization.
++ */
++#include <drivers_api.h>
++#include <execinfo.h>
++#include <unistd.h>
++#include <json-glib/json-glib.h>
++#include "drivers/elanmoc/elanmoc.h"
++
++static guint8 command[256], identity[69];
++static gsize command_size;
++static guint enrolled, captures, info_reads, aborts;
++static gboolean identified, match_next = TRUE, cancel_next, closing;
++static guint ready_reads;
++static GCancellable *external_cancel;
++static const char *scenario;
++static gboolean mode (const char *name) { return g_str_equal (scenario, name); }
++
++G_GNUC_NORETURN int libusb_init (libusb_context **context)
++{
++  (void) context;
++  g_error ("Physical USB initialization is forbidden in the offline test");
++}
++
++void g_usb_device_bulk_transfer_async (GUsbDevice *self, guint8 endpoint,
++                                       guint8 *buffer, gsize length, guint timeout,
++                                       GCancellable *cancellable,
++                                       GAsyncReadyCallback callback, gpointer userdata)
++{
++  (void) timeout;
++  g_assert_true (g_usb_device_is_emulated (self));
++  GTask *task = g_task_new (self, cancellable, callback, userdata);
++  if (!(endpoint & 0x80))
++    {
++      g_assert_cmpuint (length, <=, sizeof command);
++      memcpy (command, buffer, MIN (length, sizeof command));
++      command_size = length;
++      if (length == 3 && command[2] == 2)
++        {
++          aborts++;
++          if ((closing && mode ("close-out-error")) ||
++              (!closing && mode ("abort-failed")))
++            {
++              g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
++                                       "synthetic abort/close transport failure");
++              g_object_unref (task); return;
++            }
++        }
++      if (length >= 3 && command[2] == 0x11)
++        {
++          g_assert_cmpuint (length, ==, 72);
++          memcpy (identity, command + 3, sizeof identity);
++          if (mode ("short-commit-out"))
++            { g_task_return_int (task, length - 1); g_object_unref (task); return; }
++        }
++      if (length >= 3 && command[2] == 0x13)
++        {
++          g_assert_cmpuint (length, ==, 72);
++          g_assert_cmpmem (command + 3, 69, identity, 69);
++          if (mode ("short-delete-out"))
++            { g_task_return_int (task, length - 1); g_object_unref (task); return; }
++        }
++      g_task_return_int (task, length);
++    }
++  else
++    {
++      guint8 response[128] = {0x40, 0};
++      gsize size = 2;
++      g_assert_cmpuint (command_size, >=, 2);
++      if (command_size == 2 && command[1] == 0x19)
++        { response[0] = 0x30; response[1] = mode ("wrong-fw") ? 0x15 : 0x14; }
++      else if (command_size == 2 && command[1] == 0x0c)
++        { memcpy (response, "\x4f\0\x4f\0", 4); size = 4; if (mode ("wrong-dim")) response[2]++; }
++      else if (command[2] == 0)
++        { ready_reads++; response[1] = mode ("ready-last") && ready_reads <= ELAN_MOC_CAL_RETRY ? 0 : 3; }
++      else if (command[2] == 4) response[1] = mode ("bad-count") ? 11 : enrolled;
++      else if (command[2] == 1)
++        { g_assert_cmpuint (endpoint, ==, 0x84); captures++; }
++      else if (command[2] == 3)
++        {
++          g_assert_cmpuint (endpoint, ==, 0x84);
++          if (cancel_next)
++            {
++              cancel_next = FALSE;
++              if (external_cancel) g_cancellable_cancel (external_cancel);
++              g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_CANCELLED, "synthetic cancelled scan");
++              g_object_unref (task); return;
++            }
++          identified = enrolled && match_next;
++          response[1] = identified ? 0 : 0xfd;
++        }
++      else if (command[2] == 0x11)
++        { if (mode ("commit-refused")) response[1] = 0xff; else enrolled++; }
++      else if (command[2] == 0x13)
++        {
++          if (mode ("delete-refused")) response[1] = 0xff;
++          else if (!mode ("delete-no-effect")) enrolled--;
++        }
++      else if (command[2] == 0x12)
++        {
++          info_reads++;
++          if (!identified || mode ("info-rejected")) response[1] = 0xff;
++          else
++            {
++              size = mode ("info64") ? 64 : 71;
++              memcpy (response + 2, identity, size - 2);
++              if (mode ("short-info")) size = 7;
++              if (mode ("empty-info")) size = 0;
++              if (mode ("wrong-uid")) response[22] = response[22] == '0' ? '1' : '0';
++              if (mode ("foreign-info")) memcpy (response + 7, "WIN-", 4);
++              if (mode ("bad-date")) memcpy (response + 11, "20260230", 8);
++              if (mode ("bad-utf8")) response[31] = 0xff;
++              if (mode ("long-info-uid")) response[6] = 255;
++              if (mode ("nul-info-uid")) response[12] = 0;
++            }
++        }
++      else
++        {
++          g_assert_cmpuint (command[2], ==, 0x14);
++          if (mode ("short-mode")) size = 1;
++        }
++      g_assert_cmpuint (length, >=, size);
++      memcpy (buffer, response, size);
++      g_task_return_int (task, size);
++    }
++  g_object_unref (task);
++}
++
++static void initialized (GObject *object, GAsyncResult *result, gpointer pointer)
++{
++  g_autoptr(GError) error = NULL;
++  g_assert_true (g_async_initable_init_finish (G_ASYNC_INITABLE (object), result, &error));
++  g_assert_no_error (error);
++  *(gboolean *) pointer = TRUE;
++}
++
++static void fatal_trace (const gchar *domain, GLogLevelFlags level,
++                         const gchar *message, gpointer pointer)
++{
++  (void) domain; (void) level; (void) pointer;
++  void *frames[40];
++  g_printerr ("GLib fatal: %s\n", message);
++  backtrace_symbols_fd (frames, backtrace (frames, 40), STDERR_FILENO);
++}
++
++int main (int argc, char **argv)
++{
++  g_assert_cmpint (argc, ==, 2); scenario = argv[1];
++  g_log_set_handler ("GLib", G_LOG_LEVEL_ERROR | G_LOG_FLAG_FATAL, fatal_trace, NULL);
++  g_setenv ("FP_DEVICE_EMULATION", "1", TRUE);
++  g_autoptr(GError) error = NULL;
++  g_autoptr(GCancellable) verify_cancel = NULL;
++  /* Bypass GInitable deliberately: no libusb context, discovery or hardware. */
++  g_autoptr(GUsbContext) usb_context = g_object_new (G_USB_TYPE_CONTEXT, NULL);
++  g_autoptr(JsonParser) parser = json_parser_new ();
++  g_assert_true (json_parser_load_from_data (parser,
++    "{\"UsbDevices\":[{\"PlatformId\":\"offline-only\",\"IdVendor\":1267,\"IdProduct\":3166}]}", -1, &error));
++  g_assert_true (g_usb_context_load (usb_context,
++    json_node_get_object (json_parser_get_root (parser)), &error));
++  g_autoptr(GPtrArray) devices = g_usb_context_get_devices (usb_context);
++  g_assert_cmpuint (devices->len, ==, 1);
++  GUsbDevice *usb = g_ptr_array_index (devices, 0);
++  g_assert_true (g_usb_device_is_emulated (usb));
++  g_autoptr(FpDevice) device = g_object_new (fpi_device_elanmoc_get_type (), "fpi-usb-device", usb, NULL);
++  gboolean ready = FALSE;
++  g_async_initable_init_async (G_ASYNC_INITABLE (device), 0, NULL, initialized, &ready);
++  while (!ready) g_main_context_iteration (NULL, TRUE);
++  g_assert_false (fp_device_has_feature (device, FP_DEVICE_FEATURE_STORAGE_LIST));
++  g_assert_false (fp_device_has_feature (device, FP_DEVICE_FEATURE_STORAGE_CLEAR));
++  g_assert_true (fp_device_has_feature (device, FP_DEVICE_FEATURE_STORAGE_DELETE));
++  gboolean opened = fp_device_open_sync (device, NULL, &error);
++  if (mode ("wrong-fw") || mode ("wrong-dim") || mode ("short-mode") || mode ("bad-count"))
++    {
++      g_assert_false (opened); g_assert_nonnull (error); g_clear_error (&error);
++      g_assert_cmpuint (captures, ==, 0); g_assert_cmpuint (enrolled, ==, 0);
++      g_print ("PASS rejected invalid initialization: %s\n", scenario);
++      g_object_run_dispose (G_OBJECT (usb_context));
++      return 0;
++    }
++  g_assert_true (opened); g_assert_no_error (error);
++  g_autoptr(GPtrArray) prints = fp_device_list_prints_sync (device, NULL, &error);
++  g_assert_null (prints);
++  g_assert_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_NOT_SUPPORTED);
++  g_clear_error (&error);
++  g_assert_cmpuint (info_reads, ==, 0);
++  /* Own the template reference before passing its floating ref to enroll. */
++  g_autoptr(FpPrint) template = g_object_ref_sink (fp_print_new (device));
++  g_autofree gchar *long_username = g_strnfill (64, 'x');
++  fp_print_set_username (template, mode ("long-user") ? long_username : "offline-test");
++  fp_print_set_finger (template, FP_FINGER_RIGHT_INDEX);
++  g_autoptr(FpPrint) print = fp_device_enroll_sync (device, template, NULL, NULL, NULL, &error);
++  if (mode ("commit-refused") || mode ("short-commit-out") || mode ("long-user"))
++    {
++      g_assert_null (print); g_assert_nonnull (error); g_clear_error (&error);
++      g_assert_cmpuint (enrolled, ==, 0); goto done;
++    }
++  g_assert_no_error (error); g_assert_nonnull (print);
++  g_assert_cmpuint (captures, ==, 9);
++  gboolean matched = FALSE;
++  gboolean ok = fp_device_verify_sync (device, print, NULL, NULL, NULL, &matched, NULL, &error);
++  if (mode ("info-rejected") || mode ("short-info") || mode ("empty-info") ||
++      mode ("bad-date") || mode ("bad-utf8") || mode ("long-info-uid") || mode ("nul-info-uid"))
++    {
++      g_assert_false (ok); g_assert_false (matched); g_assert_nonnull (error);
++      g_clear_error (&error); goto done;
++    }
++  if (mode ("wrong-uid") || mode ("foreign-info"))
++    { g_assert_true (ok); g_assert_no_error (error); g_assert_false (matched); goto done; }
++  g_assert_true (ok); g_assert_no_error (error); g_assert_true (matched);
++  match_next = FALSE;
++  guint previous_info = info_reads;
++  g_assert_true (fp_device_verify_sync (device, print, NULL, NULL, NULL, &matched, NULL, &error));
++  g_assert_no_error (error); g_assert_false (matched);
++  g_assert_cmpuint (info_reads, ==, previous_info);
++  cancel_next = TRUE;
++  if (mode ("real-cancel"))
++    { verify_cancel = g_cancellable_new (); external_cancel = verify_cancel; }
++  g_assert_false (fp_device_verify_sync (device, print, verify_cancel, NULL, NULL, &matched, NULL, &error));
++  external_cancel = NULL;
++  gint expected_cancel_error = mode ("abort-failed") ? G_IO_ERROR_FAILED : G_IO_ERROR_CANCELLED;
++  g_assert_error (error, G_IO_ERROR, expected_cancel_error);
++  g_clear_error (&error);
++  g_assert_cmpuint (aborts, ==, 1);
++  match_next = TRUE;
++  g_assert_true (fp_device_verify_sync (device, print, NULL, NULL, NULL, &matched, NULL, &error));
++  g_assert_no_error (error); g_assert_true (matched);
++  previous_info = info_reads;
++  ok = fp_device_delete_print_sync (device, print, NULL, &error);
++  g_assert_cmpuint (info_reads, ==, previous_info);
++  if (mode ("delete-refused") || mode ("delete-no-effect") || mode ("short-delete-out"))
++    { g_assert_false (ok); g_assert_nonnull (error); g_clear_error (&error); }
++  else
++    {
++      g_assert_true (ok); g_assert_no_error (error); g_assert_cmpuint (enrolled, ==, 0);
++      g_assert_true (fp_device_verify_sync (device, print, NULL, NULL, NULL, &matched, NULL, &error));
++      g_assert_no_error (error); g_assert_false (matched);
++    }
++  if (mode ("stress"))
++    {
++      for (guint cycle = 0; cycle < 100; cycle++)
++        {
++          g_autoptr(FpPrint) cycle_template = g_object_ref_sink (fp_print_new (device));
++          fp_print_set_username (cycle_template, "offline-stress");
++          fp_print_set_finger (cycle_template, FP_FINGER_RIGHT_INDEX);
++          g_autoptr(FpPrint) cycle_print = fp_device_enroll_sync (device, cycle_template, NULL, NULL, NULL, &error);
++          g_assert_no_error (error); g_assert_nonnull (cycle_print);
++          for (guint scan = 0; scan < 10; scan++)
++            {
++              g_assert_true (fp_device_verify_sync (device, cycle_print, NULL, NULL, NULL, &matched, NULL, &error));
++              g_assert_no_error (error); g_assert_true (matched);
++            }
++          g_assert_true (fp_device_delete_print_sync (device, cycle_print, NULL, &error));
++          g_assert_no_error (error); g_assert_cmpuint (enrolled, ==, 0);
++        }
++      g_print ("PASS 100 enrollment/delete cycles + 1000 matching operations\n");
++    }
++done:
++  closing = TRUE;
++  gboolean closed = fp_device_close_sync (device, NULL, &error);
++  if (mode ("close-out-error"))
++    { g_assert_false (closed); g_assert_error (error, G_IO_ERROR, G_IO_ERROR_FAILED); g_clear_error (&error); }
++  else
++    { g_assert_true (closed); g_assert_no_error (error); }
++  g_print ("PASS full API + ownership/finalization: %s\n", scenario);
++  /* Match FpContext disposal: break the synthetic context/device reference cycle. */
++  g_object_run_dispose (G_OBJECT (usb_context));
++  return 0;
++}
+diff --git a/tests/test-elanmoc-security.c b/tests/test-elanmoc-security.c
+new file mode 100644
+--- /dev/null
++++ b/tests/test-elanmoc-security.c
+@@ -0,0 +1,139 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Deterministic mutation tests of the actual private parsers. Synthetic only.
++ */
++#include <json-glib/json-glib.h>
++#include "../libfprint/drivers/elanmoc/elanmoc.c"
++
++G_GNUC_NORETURN int
++libusb_init (libusb_context **context)
++{
++  (void) context;
++  g_error ("Physical USB initialization forbidden in parser tests");
++}
++
++G_GNUC_NORETURN void
++g_usb_device_bulk_transfer_async (GUsbDevice *self, guint8 endpoint,
++                                   guint8 *buffer, gsize length, guint timeout,
++                                   GCancellable *cancellable,
++                                   GAsyncReadyCallback callback, gpointer userdata)
++{
++  (void) self; (void) endpoint; (void) buffer; (void) length; (void) timeout;
++  (void) cancellable; (void) callback; (void) userdata;
++  g_error ("Parser tests must not submit USB transfers");
++}
++
++static void
++initialized (GObject *object, GAsyncResult *result, gpointer data)
++{
++  g_autoptr(GError) error = NULL;
++  g_assert_true (g_async_initable_init_finish (G_ASYNC_INITABLE (object), result, &error));
++  g_assert_no_error (error);
++  *(gboolean *) data = TRUE;
++}
++
++static void
++check_frame (FpiDeviceElanmoc *self, const guint8 *frame, gsize length,
++             gboolean modern)
++{
++  /* Exact allocation catches reads past actual_length, not only buffer capacity. */
++  g_autofree guint8 *copy = length ? g_memdup2 (frame, length) : NULL;
++  g_autoptr(GError) error = NULL;
++  g_autoptr(FpPrint) print = modern ?
++    create_print_from_response (self, copy, length, &error) :
++    create_print_from_0c5e_response (self, copy, length, &error);
++  if (print)
++    {
++      g_assert_no_error (error);
++      g_assert_cmpuint (length, >=, modern ? 5 : 64);
++      if (!modern)
++        {
++          g_assert_cmpuint (length, <=, 71);
++          g_assert_cmpuint (copy[6], <=, 57);
++          g_assert_cmpuint (copy[6], >=, 24);
++        }
++    }
++}
++
++int
++main (int argc, char **argv)
++{
++  g_assert_cmpint (argc, ==, 2);
++  g_setenv ("FP_DEVICE_EMULATION", "1", TRUE);
++  g_autoptr(GError) error = NULL;
++  g_autoptr(GUsbContext) context = g_object_new (G_USB_TYPE_CONTEXT, NULL);
++  g_autoptr(JsonParser) parser = json_parser_new ();
++  g_assert_true (json_parser_load_from_data (parser,
++    "{\"UsbDevices\":[{\"PlatformId\":\"security-test\",\"IdVendor\":1267,\"IdProduct\":3166}]}", -1, &error));
++  g_assert_true (g_usb_context_load (context,
++    json_node_get_object (json_parser_get_root (parser)), &error));
++  g_autoptr(GPtrArray) devices = g_usb_context_get_devices (context);
++  g_assert_cmpuint (devices->len, ==, 1);
++  g_autoptr(FpDevice) device = g_object_new (fpi_device_elanmoc_get_type (),
++    "fpi-usb-device", g_ptr_array_index (devices, 0), NULL);
++  gboolean ready = FALSE;
++  g_async_initable_init_async (G_ASYNC_INITABLE (device), 0, NULL, initialized, &ready);
++  while (!ready) g_main_context_iteration (NULL, TRUE);
++  FpiDeviceElanmoc *self = FPI_DEVICE_ELANMOC (device);
++  if (g_str_equal (argv[1], "modern-short"))
++    {
++      const guint8 short_frame[] = { 0x43 };
++      check_frame (self, short_frame, sizeof short_frame, TRUE);
++    }
++  else if (g_str_equal (argv[1], "modern-date"))
++    {
++      const char *uid = "FP1-20260230-7-12345678-offline-fuzz";
++      guint8 frame[64] = {0x43, 0};
++      frame[4] = strlen (uid); memcpy (frame + 5, uid, strlen (uid));
++      g_autoptr(GError) bad_error = NULL;
++      g_autoptr(FpPrint) print = create_print_from_response (self, frame, sizeof frame, &bad_error);
++      g_assert_null (print); g_assert_nonnull (bad_error);
++    }
++  else
++    {
++      g_autoptr(GRand) random = g_rand_new_with_seed (0x0c5e3014);
++      const gchar *uid = "FP1-20261027-7-12345678-offline-fuzz";
++      guint8 valid[128] = {0x40, 0};
++      valid[6] = strlen (uid);
++      memcpy (valid + 7, uid, strlen (uid));
++      guint cases = 0;
++      gint64 started = g_get_monotonic_time ();
++      for (guint modern = 0; modern <= (g_str_equal (argv[1], "all") ? 1u : 0u); modern++)
++        {
++          for (guint length = 0; length <= 128; length++)
++            for (guint fill = 0; fill <= 255; fill++)
++              {
++                guint8 frame[128];
++                memset (frame, fill, sizeof frame);
++                check_frame (self, frame, length, modern); cases++;
++              }
++          /* Mutate each byte of both accepted legacy frame sizes. */
++          if (!modern)
++            for (guint length = 64; length <= 71; length += 7)
++              for (guint offset = 0; offset < length; offset++)
++                for (guint value = 0; value <= 255; value++)
++                  {
++                    guint8 frame[128];
++                    memcpy (frame, valid, sizeof frame); frame[offset] = value;
++                    check_frame (self, frame, length, FALSE); cases++;
++                  }
++          for (guint i = 0; i < 100000; i++)
++            {
++              guint8 frame[128];
++              guint length = g_rand_int_range (random, 0, 129);
++              memcpy (frame, valid, sizeof frame);
++              if (modern)
++                {
++                  memset (frame, 0, sizeof frame); frame[0] = 0x43;
++                  frame[4] = strlen (uid); memcpy (frame + 5, uid, strlen (uid));
++                }
++              for (guint mutation = 0; mutation < 4; mutation++)
++                frame[g_rand_int_range (random, 0, 128)] = g_rand_int_range (random, 0, 256);
++              check_frame (self, frame, length, modern); cases++;
++            }
++        }
++      g_print ("PASS actual parser mutations: %u cases in %.3f seconds\n",
++               cases, (g_get_monotonic_time () - started) / 1000000.0);
++    }
++  g_object_run_dispose (G_OBJECT (context));
++  return 0;
++}
