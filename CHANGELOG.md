@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1 — 2026-11-25
+
+- Report a protocol error, instead of passing a NULL error, if the sensor exceeds the enrollment stage count.
+- Arch recipe revision 5.
+
 ## 0.1.0 — 2026-10-28
 
 First stable project release for ELAN 04f3:0c5e firmware 3014 on the documented HP ProBook 450 G8 / Arch Linux configuration.

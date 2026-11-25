@@ -16,11 +16,11 @@ Building does not install the package. After a successful build/check, close fin
 
 ```sh
 sudo systemctl stop fprintd.service
-sudo pacman -U './libfprint-elan-0c5e-1:1.94.100-4-x86_64.pkg.tar.zst'
+sudo pacman -U './libfprint-elan-0c5e-1:1.94.100-5-x86_64.pkg.tar.zst'
 sudo systemctl start fprintd.service
 ```
 
-Restart fprintd even if pacman reports an error, so the existing installed library can be used. Pacman resolves the library conflict interactively. The revision-4 source includes the audited hardening fixes and was subsequently reported working by the hardware tester. The detailed original lifecycle used revision 2; see [TESTING.md](TESTING.md).
+Restart fprintd even if pacman reports an error, so the existing installed library can be used. Pacman resolves the library conflict interactively. Revision 5 adds the 0.1.1 enrollment error fix to the revision-4 source that the hardware tester reported working. The detailed original lifecycle used revision 2; see [TESTING.md](TESTING.md).
 
 No PAM hook, sensor erase, host-reference import or automatic enrollment is included. This is a local source recipe, not an already-published AUR package.
 

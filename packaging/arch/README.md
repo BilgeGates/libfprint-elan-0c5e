@@ -1,6 +1,6 @@
 # Arch source recipe
 
-This local-source PKGBUILD and `.SRCINFO` build `libfprint-elan-0c5e 1:1.94.100-4` with only the elanmoc driver. Generate the matching archive from the repository root:
+This local-source PKGBUILD and `.SRCINFO` build `libfprint-elan-0c5e 1:1.94.100-5` with only the elanmoc driver. Generate the matching archive from the repository root:
 
 ```sh
 ./tools/export-arch-source.py

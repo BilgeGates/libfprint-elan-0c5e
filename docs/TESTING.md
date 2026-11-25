@@ -51,7 +51,7 @@ Read-only inspection found no pam_fprintd entry on the SDDM login chain, while K
 
 ## Release source and hardware confirmation
 
-Version 0.1.0 includes the hardening fixes in SECURITY-AUDIT.md and recipe revision 4. Earlier instrumented physical lifecycle results used revision 2. On 2026-10-28, after receiving the revision-4 installation and reboot-test instructions, the hardware tester confirmed the driver works and authorized a stable release. No new instrumented transcript of that confirmation was supplied. It does not establish that every earlier lifecycle/fault-injection test was repeated on revision 4. The two-second reset delay is not a measured minimum.
+Version 0.1.1 (recipe revision 5) adds one enrollment error-path fix to 0.1.0, which includes the hardening fixes in SECURITY-AUDIT.md and recipe revision 4. Earlier instrumented physical lifecycle results used revision 2. On 2026-10-28, after receiving the revision-4 installation and reboot-test instructions, the hardware tester confirmed the driver works and authorized a stable release. No new instrumented transcript of that confirmation was supplied. It does not establish that every earlier lifecycle/fault-injection test was repeated on revision 4. The two-second reset delay is not a measured minimum.
 
 ## Package validation
 
@@ -59,6 +59,6 @@ The earlier revision-3 recipe completed on the development host with a source-pa
 
 ## Not established
 
-Suspend/resume, repeated reboot stress testing, other machines, other firmware and Debian builds are not established. Neither a clean-chroot package build nor an independent security review has been completed; the local agent-performed source audit is documented separately. Existing upstream USB replay tests requiring introspection/umockdev were not counted as passed. The single-driver hwdb comparison test was skipped; its generator ran.
+Suspend/resume, repeated reboot stress testing, other machines, other firmware and Debian builds are not established. Neither a clean-chroot package build nor an independent security review has been completed; the local source audit is documented separately. Existing upstream USB replay tests requiring introspection/umockdev were not counted as passed. The single-driver hwdb comparison test was skipped; its generator ran.
 
 Run `./tools/test.sh` to reproduce the portable offline checks. The source export tools verify the reviewed manifest before creating release artifacts.

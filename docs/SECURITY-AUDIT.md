@@ -1,6 +1,6 @@
 # Local source security audit — 2026-10-28
 
-Scope: the bundled ELAN driver, matched identity parsing, enrollment/deletion framing, async ownership/cancellation/close paths, synthetic test fixtures and source-delivery tools. Performed by the coding agent locally at the user's request. This is not an independent security assessment, penetration-test certificate, CVE assignment or a claim that every vulnerability is absent.
+Scope: the bundled ELAN driver, matched identity parsing, enrollment/deletion framing, async ownership/cancellation/close paths, synthetic test fixtures and source-delivery tools. Performed locally by the project. This is not an independent security assessment, penetration-test certificate, CVE assignment or a claim that every vulnerability is absent.
 
 The real sensor was not exercised by this offline audit. The audited source builds Arch recipe `1:1.94.100-4`. Earlier instrumented physical lifecycle results used revision 2; the hardware tester later confirmed the updated driver works before the 0.1.0 stable release. That confirmation is separate from the offline audit.
 

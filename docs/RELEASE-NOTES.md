@@ -1,3 +1,12 @@
+# 0.1.1
+
+Released 2026-11-25. Maintenance release of 0.1.0 for ELAN 04f3:0c5e firmware 3014.
+
+- If the sensor reports more enrollment stages than expected, the driver now fails with a protocol error. Previously it passed a NULL error to the state machine. This path is not reached in normal operation.
+- Arch recipe revision 1:1.94.100-5.
+
+No wire protocol or identity handling changed. The offline test suite passes with this change. Normal enrollment on the physical sensor does not reach this path.
+
 # 0.1.0 — first stable release
 
 Released 2026-10-28 for the documented ELAN 04f3:0c5e firmware 3014 target, tested on HP ProBook 450 G8 / Arch Linux x86_64.

@@ -16,6 +16,6 @@ Use issue templates for ordinary bugs after removing usernames and FP1 identity 
 
 ## Audit scope
 
-See [SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md) for reproduced defects, fixes and reproducible ASan/UBSan/LSan tests. This was a local, agent-assisted source review, not an independent security assessment. Passing tests do not establish absence of all vulnerabilities, leaks or timing defects.
+See [SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md) for reproduced defects, fixes and reproducible ASan/UBSan/LSan tests. This was a local source review, not an independent security assessment. Passing tests do not establish absence of all vulnerabilities, leaks or timing defects.
 
 Malicious sensor firmware, biometric liveness/spoof resistance, compromised root accounts, every third-party dependency and operating-system authentication policy are outside this review. Suspend/resume and other hardware/firmware/distribution runtime remain unverified.

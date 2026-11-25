@@ -2,7 +2,7 @@
 
 Community libfprint support for **ELAN USB `04f3:0c5e`, firmware `3014`**, tested on an **HP ProBook 450 G8 running Arch Linux**.
 
-**Version 0.1.0 — first stable project release for the documented target.** This is a userspace driver adaptation built on libfprint, not an official HP or upstream libfprint release. Biometric matching runs in the sensor's firmware. No Windows driver binary is required at runtime.
+**Version 0.1.1.** This is a userspace driver adaptation built on libfprint, not an official HP or upstream libfprint release. Biometric matching runs in the sensor's firmware. No Windows driver binary is required at runtime.
 
 [Build](docs/BUILDING.md) · [Install](docs/INSTALLATION.md) · [Test results](docs/TESTING.md) · [Protocol](docs/PROTOCOL.md) · [Security audit](docs/SECURITY-AUDIT.md)
 
@@ -54,7 +54,7 @@ cd packaging/arch
 makepkg
 ```
 
-The archive is generated locally to keep duplicate compressed source out of Git. A matching archive is also available as a release asset. The recipe builds `libfprint-elan-0c5e 1:1.94.100-4`; the project release version is `0.1.0`.
+The archive is generated locally to keep duplicate compressed source out of Git. A matching archive is also available as a release asset. The recipe builds `libfprint-elan-0c5e 1:1.94.100-5`; the project release version is `0.1.1`.
 
 Installation and enrollment are separate steps in [INSTALLATION.md](docs/INSTALLATION.md). No prebuilt binary, PAM modification, sensor-clear operation or automatic enrollment is included.
 
