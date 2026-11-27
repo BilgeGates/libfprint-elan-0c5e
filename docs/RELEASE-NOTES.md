@@ -1,3 +1,7 @@
+# 0.1.2
+
+Released 2026-11-27. Code comments in the driver and its tests were shortened. There is no functional change; the offline test suite passes. Arch recipe revision 1:1.94.100-6.
+
 # 0.1.1
 
 Released 2026-11-25. Maintenance release of 0.1.0 for ELAN 04f3:0c5e firmware 3014.

@@ -252,9 +252,7 @@ elanmoc_get_cmd (FpDevice *device, guint8 *buffer_out,
   fpi_ssm_start (self->cmd_ssm, fp_cmd_ssm_done);
 }
 
-/* A cancelled host IN transfer does not itself abort the sensor's capture.
- * Complete cancellation only after the legacy abort OUT transfer finishes.
- * This command has no reply and does not change stored enrollments. */
+/* Cancellation completes only after the legacy abort OUT transfer. */
 static void
 elanmoc_cancel_done_cb (FpiDeviceElanmoc *self,
                         uint8_t *buffer_in G_GNUC_UNUSED,
@@ -506,11 +504,7 @@ elan_enroll_run_state (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case MOC_ENROLL_REENROLL_CHECK:
-      /*
-       * ELAN 04f3:0c5e firmware 0x3014 does not reply to the
-       * re-enrollment-check command (0x40 ff 22).
-       * Skip this optional step and proceed to normal enrollment.
-       */
+      /* Firmware 0x3014 does not answer the re-enrollment check. */
       if (g_usb_device_get_pid (fpi_device_get_usb_device (dev)) == 0x0c5e)
         {
           if (self->curr_enrolled >= ELAN_MAX_ENROLL_NUM + 1)
@@ -573,7 +567,6 @@ task_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
     fpi_device_action_error (dev, error);
 }
 
-/* Validate before calling the core metadata parser, which assumes valid fields. */
 static gboolean
 elanmoc_user_id_valid (const guint8 *userid, gsize length)
 {
@@ -682,7 +675,6 @@ create_print_from_0c5e_response (FpiDeviceElanmoc *self,
   const guint8 *userid;
   g_autofree gchar *userid_safe = NULL;
 
-  /* Read only after a successful identify. INFO is not a cold enumeration API. */
   if ((length_in != ELAN_LEGACY_INFO_SIZE && length_in != ELAN_LEGACY_INFO_FULL_SIZE) ||
       buffer_in[0] != 0x40 || buffer_in[1] != 0)
     {
@@ -691,8 +683,6 @@ create_print_from_0c5e_response (FpiDeviceElanmoc *self,
       return NULL;
     }
 
-  /* An empty entry inside the advertised active bank is inconsistent. Do not
-   * return a truncated successful inventory to fprintd. */
   gboolean all_zero = TRUE, all_ff = TRUE;
   for (gsize i = 3; i < length_in; i++)
     {
@@ -706,7 +696,7 @@ create_print_from_0c5e_response (FpiDeviceElanmoc *self,
       return NULL;
     }
 
-  /* Binary Windows identities are not Linux authentication identities. */
+  /* Records not created by libfprint never authenticate a Linux print. */
   if (memcmp (buffer_in + 7, "FP1-", 4) != 0)
     return NULL;
 
@@ -728,10 +718,6 @@ create_print_from_0c5e_response (FpiDeviceElanmoc *self,
                                    userid_len,
                                    1);
 
-  /*
-   * Match the representation produced by the existing elanmoc
-   * enrollment path.
-   */
   data = g_variant_new ("(yy@ay)",
                         0,
                         0,
@@ -819,10 +805,6 @@ elanmoc_get_finger_info (FpDevice *device,
     {
       cmd_buf = elanmoc_compose_cmd (&elanmoc_legacy_finger_info_cmd);
 
-      /*
-       * Legacy command format:
-       * 40 ff 12 <slot>
-       */
       cmd_buf[3] = slot;
 
       fp_info ("elanmoc 04f3:0c5e: requesting legacy finger info for slot %u",
@@ -940,12 +922,6 @@ elanmoc_match_report_cb (FpiDeviceElanmoc *self,
 
   if (!print)
     {
-      /*
-       * A 0c5e sensor may contain fingerprints enrolled by Windows
-       * or another implementation. The sensor can legitimately match
-       * one of those slots, but it must never authenticate a Linux
-       * libfprint identity.
-       */
       if (!error &&
           g_usb_device_get_pid (
             fpi_device_get_usb_device (FP_DEVICE (self))) == 0x0c5e)
@@ -1006,10 +982,6 @@ elanmoc_match_report_cb (FpiDeviceElanmoc *self,
       fpi_device_verify_complete (device, NULL);
     }
 
-  /*
-   * The matched-slot finger-info request is asynchronous.
-   * Finish IDENTIFY_NUM_STATES only after reporting the final result.
-   */
   fpi_ssm_next_state (self->task_ssm);
 }
 
@@ -1117,7 +1089,6 @@ elanmoc_identify_cb (FpiDeviceElanmoc *self,
       return;
     }
 
-
   if (buffer_in[1] == ELAN_MSG_VERIFY_ERR)
     {
       identify_status_report (self, RSP_VERIFY_FAIL,
@@ -1129,14 +1100,7 @@ elanmoc_identify_cb (FpiDeviceElanmoc *self,
 
   if (buffer_in[1] <= ELAN_MAX_ENROLL_NUM)
     {
-      /*
-       * Successful sensor-side match.
-       *
-       * identify_status_report() starts an asynchronous finger-info
-       * request. Do NOT complete IDENTIFY_NUM_STATES yet; the
-       * elanmoc_match_report_cb() callback will finish the SSM after
-       * the matched slot's identity has been processed.
-       */
+      /* The SSM completes in elanmoc_match_report_cb(). */
       identify_status_report (self, RSP_VERIFY_OK,
                               buffer_in[1], error);
       return;
@@ -1180,10 +1144,6 @@ elan_identify_run_state (FpiSsm *ssm, FpDevice *dev)
       if (g_usb_device_get_pid (
             fpi_device_get_usb_device (dev)) == 0x0c5e)
         {
-          /*
-           * ELAN 04f3:0c5e uses the older ARM-M4 identify
-           * command: 40 ff 03.
-           */
           fp_info ("elanmoc 04f3:0c5e: using legacy identify command");
 
           cmd_buf = elanmoc_compose_cmd (
@@ -1507,7 +1467,6 @@ elanmoc_cmd_ver_cb (FpiDeviceElanmoc *self,
       return;
     }
 
-
   self->fw_ver = (buffer_in[0] << 8 | buffer_in[1]);
   fp_info ("elanmoc  FW Version %x ", self->fw_ver);
   if (g_usb_device_get_pid (fpi_device_get_usb_device (FP_DEVICE (self))) == 0x0c5e &&
@@ -1539,7 +1498,6 @@ elanmoc_cmd_dim_cb (FpiDeviceElanmoc *self,
         FP_DEVICE_ERROR_PROTO, "Malformed ELAN elanmoc_cmd_dim_cb reply (%zu bytes)", length_in));
       return;
     }
-
 
   self->x_trace = buffer_in[0];
   self->y_trace = buffer_in[2];
@@ -1575,7 +1533,6 @@ elanmoc_get_status_cb (FpiDeviceElanmoc *self,
         FP_DEVICE_ERROR_PROTO, "Malformed ELAN elanmoc_get_status_cb reply (%zu bytes)", length_in));
       return;
     }
-
 
   if (buffer_in[1] != 0x03 && self->cmd_retry_cnt != 0)
     {
@@ -1708,7 +1665,7 @@ task_ssm_exit_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   g_autoptr(GError) release_error = NULL;
 
   self->task_ssm = NULL;
-  /* A failed abort already owns an error. Never pass it as an output GError. */
+  /* error is already set: never reuse it as an out-parameter. */
   g_usb_device_release_interface (fpi_device_get_usb_device (dev), 0, 0,
                                   &release_error);
   fpi_device_close_complete (dev, error ? error : g_steal_pointer (&release_error));

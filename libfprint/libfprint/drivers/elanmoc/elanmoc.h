@@ -35,7 +35,7 @@ G_DECLARE_FINAL_TYPE (FpiDeviceElanmoc, fpi_device_elanmoc, FPI, DEVICE_ELANMOC,
 #define ELAN_EP_IMG_IN (0x2 | LIBUSB_ENDPOINT_IN)
 
 #define ELAN_MOC_CMD_TIMEOUT 5000
-/* Conservative target bring-up delay; the minimum required time is unmeasured. */
+/* Conservative; the minimum is unmeasured. */
 #define ELAN_LEGACY_RESET_DELAY_MS 2000
 #define ELAN_MOC_CAL_RETRY 500
 #define ELAN_MOC_ENROLL_TIMES 9
@@ -93,13 +93,7 @@ static const struct elanmoc_cmd elanmoc_verify_cmd = {
   .resp_len = 2,
 };
 
-/*
- * Legacy ARM-M4 identify command.
- * Used by ELAN 04f3:0c5e.
- *
- * Response byte 1 contains either the matched slot or
- * a fingerprint status/error code.
- */
+/* 04f3:0c5e identify. Reply byte 1: matched slot or status code. */
 static const struct elanmoc_cmd elanmoc_legacy_identify_cmd = {
   .cmd_header = {0x40, 0xff, 0x03},
   .cmd_len = 3,
@@ -142,10 +136,7 @@ static const struct elanmoc_cmd elanmoc_get_userid_cmd = {
   .resp_len = 97,
 };
 
-/*
- * Legacy ARM-M4 finger-info command.
- * Used by ELAN 04f3:0c5e / firmware 0x3014.
- */
+/* 04f3:0c5e finger info, firmware 0x3014. */
 static const struct elanmoc_cmd elanmoc_legacy_finger_info_cmd = {
   .cmd_header = {0x40, 0xff, 0x12},
   .cmd_len = 4,

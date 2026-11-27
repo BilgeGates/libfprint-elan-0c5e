@@ -1,7 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later
- * Independently written legacy identity frame encoder. Wire length checked
- * against HP SP152998. This does not enumerate or export biometric templates.
- */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -11,10 +8,7 @@
 #define ELAN_LEGACY_UID_MAX 57
 #define ELAN_LEGACY_DELETE_SIZE 72
 
-/* This driver's identity is four zero bytes, UID length, UID, zero padding.
- * Only its own FP1 identity format is supported. Never substitute a slot tag
- * or retry using a clear-all command. Validation never partially writes out.
- */
+/* Frame: opcode, four zero bytes, UID length, FP1 UID, zero padding. */
 static inline int
 elan_legacy_build_identity (uint8_t opcode, const uint8_t *uid, size_t uid_size,
                             uint8_t output[ELAN_LEGACY_DELETE_SIZE])

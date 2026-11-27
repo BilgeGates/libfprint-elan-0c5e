@@ -1,6 +1,3 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later
- * Deterministic mutation tests of the actual private parsers. Synthetic only.
- */
 #include <json-glib/json-glib.h>
 #include "../libfprint/drivers/elanmoc/elanmoc.c"
 
@@ -106,7 +103,6 @@ main (int argc, char **argv)
                 memset (frame, fill, sizeof frame);
                 check_frame (self, frame, length, modern); cases++;
               }
-          /* Mutate each byte of both accepted legacy frame sizes. */
           if (!modern)
             for (guint length = 64; length <= 71; length += 7)
               for (guint offset = 0; offset < length; offset++)

@@ -1,6 +1,3 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later
- * Real driver + public API, synthetic GUsb only. No libusb initialization.
- */
 #include <drivers_api.h>
 #include <execinfo.h>
 #include <unistd.h>
@@ -150,7 +147,7 @@ int main (int argc, char **argv)
   g_setenv ("FP_DEVICE_EMULATION", "1", TRUE);
   g_autoptr(GError) error = NULL;
   g_autoptr(GCancellable) verify_cancel = NULL;
-  /* Bypass GInitable deliberately: no libusb context, discovery or hardware. */
+  /* No libusb context: synthetic devices only. */
   g_autoptr(GUsbContext) usb_context = g_object_new (G_USB_TYPE_CONTEXT, NULL);
   g_autoptr(JsonParser) parser = json_parser_new ();
   g_assert_true (json_parser_load_from_data (parser,
@@ -183,7 +180,6 @@ int main (int argc, char **argv)
   g_assert_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_NOT_SUPPORTED);
   g_clear_error (&error);
   g_assert_cmpuint (info_reads, ==, 0);
-  /* Own the template reference before passing its floating ref to enroll. */
   g_autoptr(FpPrint) template = g_object_ref_sink (fp_print_new (device));
   g_autofree gchar *long_username = g_strnfill (64, 'x');
   fp_print_set_username (template, mode ("long-user") ? long_username : "offline-test");
@@ -262,7 +258,7 @@ done:
   else
     { g_assert_true (closed); g_assert_no_error (error); }
   g_print ("PASS full API + ownership/finalization: %s\n", scenario);
-  /* Match FpContext disposal: break the synthetic context/device reference cycle. */
+  /* Break the context/device reference cycle, as FpContext does. */
   g_object_run_dispose (G_OBJECT (usb_context));
   return 0;
 }

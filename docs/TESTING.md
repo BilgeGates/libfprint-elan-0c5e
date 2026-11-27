@@ -51,7 +51,7 @@ Read-only inspection found no pam_fprintd entry on the SDDM login chain, while K
 
 ## Release source and hardware confirmation
 
-Version 0.1.1 (recipe revision 5) adds one enrollment error-path fix to 0.1.0, which includes the hardening fixes in SECURITY-AUDIT.md and recipe revision 4. Earlier instrumented physical lifecycle results used revision 2. On 2026-10-28, after receiving the revision-4 installation and reboot-test instructions, the hardware tester confirmed the driver works and authorized a stable release. No new instrumented transcript of that confirmation was supplied. It does not establish that every earlier lifecycle/fault-injection test was repeated on revision 4. The two-second reset delay is not a measured minimum.
+Version 0.1.2 (recipe revision 6) only shortens comments. Version 0.1.1 (revision 5) added one enrollment error-path fix to 0.1.0, which includes the hardening fixes in SECURITY-AUDIT.md and recipe revision 4. Earlier instrumented physical lifecycle results used revision 2. On 2026-10-28, after receiving the revision-4 installation and reboot-test instructions, the hardware tester confirmed the driver works and authorized a stable release. No new instrumented transcript of that confirmation was supplied. It does not establish that every earlier lifecycle/fault-injection test was repeated on revision 4. The two-second reset delay is not a measured minimum.
 
 ## Package validation
 

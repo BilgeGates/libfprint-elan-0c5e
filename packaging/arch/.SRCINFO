@@ -1,7 +1,7 @@
 pkgbase = libfprint-elan-0c5e
 	pkgdesc = Community libfprint adaptation for ELAN 04f3:0c5e firmware 3014 (elanmoc only)
 	pkgver = 1.94.100
-	pkgrel = 5
+	pkgrel = 6
 	epoch = 1
 	arch = x86_64
 	license = LGPL-2.1-or-later
@@ -21,6 +21,6 @@ pkgbase = libfprint-elan-0c5e
 	options = !debug
 	options = !lto
 	source = libfprint-elan-source.tar.gz
-	sha256sums = 562cc3f185363e5679bbe361337757edc1c6ea255ee6c4ec2fde740021efd1ba
+	sha256sums = adb3cd92366794c3bc54dfbf753b5e3d8e42ae81fee3e4e4314879eb8371c826
 
 pkgname = libfprint-elan-0c5e

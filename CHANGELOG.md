@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 — 2026-11-27
+
+- Shorter code comments in the driver and tests. No functional change.
+- Arch recipe revision 6.
+
 ## 0.1.1 — 2026-11-25
 
 - Report a protocol error, instead of passing a NULL error, if the sensor exceeds the enrollment stage count.

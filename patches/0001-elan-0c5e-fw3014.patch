@@ -54,13 +54,11 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
  
    if (error)
      {
-@@ -242,6 +252,37 @@ elanmoc_get_cmd (FpDevice *device, guint8 *buffer_out,
+@@ -242,6 +252,35 @@ elanmoc_get_cmd (FpDevice *device, guint8 *buffer_out,
    fpi_ssm_start (self->cmd_ssm, fp_cmd_ssm_done);
  }
  
-+/* A cancelled host IN transfer does not itself abort the sensor's capture.
-+ * Complete cancellation only after the legacy abort OUT transfer finishes.
-+ * This command has no reply and does not change stored enrollments. */
++/* Cancellation completes only after the legacy abort OUT transfer. */
 +static void
 +elanmoc_cancel_done_cb (FpiDeviceElanmoc *self,
 +                        uint8_t *buffer_in G_GNUC_UNUSED,
@@ -92,7 +90,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
  enum enroll_states {
    ENROLL_RSP_RETRY,
    ENROLL_RSP_ENROLL_REPORT,
-@@ -308,7 +349,7 @@ elanmoc_get_enrolled_cb (FpiDeviceElanmoc *self,
+@@ -308,7 +347,7 @@ elanmoc_get_enrolled_cb (FpiDeviceElanmoc *self,
        return;
      }
  
@@ -101,7 +99,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
      {
        fpi_ssm_mark_failed (self->task_ssm,
                             fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-@@ -320,6 +361,27 @@ elanmoc_get_enrolled_cb (FpiDeviceElanmoc *self,
+@@ -320,6 +359,27 @@ elanmoc_get_enrolled_cb (FpiDeviceElanmoc *self,
                 buffer_in[0],
                 buffer_in[1]);
        self->curr_enrolled = buffer_in[1];
@@ -129,7 +127,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
        fpi_ssm_next_state (self->task_ssm);
      }
  }
-@@ -336,7 +398,7 @@ elanmoc_reenroll_cb (FpiDeviceElanmoc *self,
+@@ -336,7 +396,7 @@ elanmoc_reenroll_cb (FpiDeviceElanmoc *self,
        return;
      }
  
@@ -138,7 +136,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
      {
        fpi_ssm_mark_failed (self->task_ssm,
                             fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-@@ -368,11 +430,13 @@ elanmoc_enroll_cb (FpiDeviceElanmoc *self,
+@@ -368,11 +428,13 @@ elanmoc_enroll_cb (FpiDeviceElanmoc *self,
  {
    if (error)
      {
@@ -153,7 +151,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
      {
        fpi_ssm_mark_failed (self->task_ssm,
                             fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-@@ -391,20 +455,13 @@ elanmoc_enroll_cb (FpiDeviceElanmoc *self,
+@@ -391,20 +453,13 @@ elanmoc_enroll_cb (FpiDeviceElanmoc *self,
          }
  
        if (self->num_frames == self->max_moc_enroll_time && buffer_in[1] == ELAN_MSG_OK)
@@ -179,7 +177,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
      }
  }
  
-@@ -420,13 +477,7 @@ elanmoc_commit_cb (FpiDeviceElanmoc *self,
+@@ -420,13 +475,7 @@ elanmoc_commit_cb (FpiDeviceElanmoc *self,
        return;
      }
  
@@ -194,15 +192,11 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
      {
        fpi_ssm_mark_failed (self->task_ssm,
                             fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-@@ -455,6 +506,24 @@ elan_enroll_run_state (FpiSsm *ssm, FpDevice *dev)
+@@ -455,6 +504,20 @@ elan_enroll_run_state (FpiSsm *ssm, FpDevice *dev)
        break;
  
      case MOC_ENROLL_REENROLL_CHECK:
-+      /*
-+       * ELAN 04f3:0c5e firmware 0x3014 does not reply to the
-+       * re-enrollment-check command (0x40 ff 22).
-+       * Skip this optional step and proceed to normal enrollment.
-+       */
++      /* Firmware 0x3014 does not answer the re-enrollment check. */
 +      if (g_usb_device_get_pid (fpi_device_get_usb_device (dev)) == 0x0c5e)
 +        {
 +          if (self->curr_enrolled >= ELAN_MAX_ENROLL_NUM + 1)
@@ -219,7 +213,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
        data = fpi_ssm_get_data (ssm);
        cmd_buf = elanmoc_compose_cmd (&elanmoc_check_reenroll_cmd);
        memcpy (cmd_buf + 3, data, ELAN_USERDATE_SIZE);
-@@ -471,9 +540,23 @@ elan_enroll_run_state (FpiSsm *ssm, FpDevice *dev)
+@@ -471,9 +534,23 @@ elan_enroll_run_state (FpiSsm *ssm, FpDevice *dev)
  
      case MOC_ENROLL_COMMIT_RESULT:
        data = fpi_ssm_get_data (ssm);
@@ -246,11 +240,10 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
        break;
      }
  }
-@@ -490,6 +573,32 @@ task_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+@@ -490,6 +567,31 @@ task_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
      fpi_device_action_error (dev, error);
  }
  
-+/* Validate before calling the core metadata parser, which assumes valid fields. */
 +static gboolean
 +elanmoc_user_id_valid (const guint8 *userid, gsize length)
 +{
@@ -279,7 +272,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
  static FpPrint *
  create_print_from_response (FpiDeviceElanmoc *self,
                              uint8_t          *buffer_in,
-@@ -503,7 +612,7 @@ create_print_from_response (FpiDeviceElanmoc *self,
+@@ -503,7 +605,7 @@ create_print_from_response (FpiDeviceElanmoc *self,
    g_autofree gchar *userid_safe = NULL;
    int userid_len = 0;
  
@@ -288,7 +281,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
      {
        g_propagate_error (error,
                           fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-@@ -529,6 +638,14 @@ create_print_from_response (FpiDeviceElanmoc *self,
+@@ -529,6 +631,14 @@ create_print_from_response (FpiDeviceElanmoc *self,
        return NULL;
      }
  
@@ -303,7 +296,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
    userid = g_memdup2 (&buffer_in[5], userid_len);
    userid_safe = g_strndup ((const char *) &buffer_in[5], userid_len);
    print = fp_print_new (FP_DEVICE (self));
-@@ -552,6 +669,93 @@ create_print_from_response (FpiDeviceElanmoc *self,
+@@ -552,6 +662,86 @@ create_print_from_response (FpiDeviceElanmoc *self,
    return print;
  }
  
@@ -320,7 +313,6 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
 +  const guint8 *userid;
 +  g_autofree gchar *userid_safe = NULL;
 +
-+  /* Read only after a successful identify. INFO is not a cold enumeration API. */
 +  if ((length_in != ELAN_LEGACY_INFO_SIZE && length_in != ELAN_LEGACY_INFO_FULL_SIZE) ||
 +      buffer_in[0] != 0x40 || buffer_in[1] != 0)
 +    {
@@ -329,8 +321,6 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
 +      return NULL;
 +    }
 +
-+  /* An empty entry inside the advertised active bank is inconsistent. Do not
-+   * return a truncated successful inventory to fprintd. */
 +  gboolean all_zero = TRUE, all_ff = TRUE;
 +  for (gsize i = 3; i < length_in; i++)
 +    {
@@ -344,7 +334,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
 +      return NULL;
 +    }
 +
-+  /* Binary Windows identities are not Linux authentication identities. */
++  /* Records not created by libfprint never authenticate a Linux print. */
 +  if (memcmp (buffer_in + 7, "FP1-", 4) != 0)
 +    return NULL;
 +
@@ -366,10 +356,6 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
 +                                   userid_len,
 +                                   1);
 +
-+  /*
-+   * Match the representation produced by the existing elanmoc
-+   * enrollment path.
-+   */
 +  data = g_variant_new ("(yy@ay)",
 +                        0,
 +                        0,
@@ -397,7 +383,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
  static void
  elanmoc_get_userid_cb (FpiDeviceElanmoc *self,
                         uint8_t          *buffer_in,
-@@ -566,7 +770,7 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc *self,
+@@ -566,7 +756,7 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc *self,
        return;
      }
  
@@ -406,7 +392,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
      {
        fpi_ssm_mark_failed (self->task_ssm,
                             fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-@@ -601,6 +805,50 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc *self,
+@@ -601,6 +791,46 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc *self,
      }
  }
  
@@ -424,10 +410,6 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
 +    {
 +      cmd_buf = elanmoc_compose_cmd (&elanmoc_legacy_finger_info_cmd);
 +
-+      /*
-+       * Legacy command format:
-+       * 40 ff 12 <slot>
-+       */
 +      cmd_buf[3] = slot;
 +
 +      fp_info ("elanmoc 04f3:0c5e: requesting legacy finger info for slot %u",
@@ -457,7 +439,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
  static void
  elan_list_run_state (FpiSsm *ssm, FpDevice *dev)
  {
-@@ -613,12 +861,13 @@ elan_list_run_state (FpiSsm *ssm, FpDevice *dev)
+@@ -613,12 +843,13 @@ elan_list_run_state (FpiSsm *ssm, FpDevice *dev)
        cmd_buf = elanmoc_compose_cmd (&enrolled_number_cmd);
        elanmoc_get_cmd (dev, cmd_buf, enrolled_number_cmd.cmd_len, enrolled_number_cmd.resp_len, 0, elanmoc_get_enrolled_cb);
        self->list_index = 0;
@@ -474,7 +456,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
        break;
      }
  }
-@@ -628,6 +877,13 @@ elanmoc_list (FpDevice *device)
+@@ -628,6 +859,13 @@ elanmoc_list (FpDevice *device)
  {
    FpiDeviceElanmoc *self = FPI_DEVICE_ELANMOC (device);
  
@@ -488,7 +470,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
    self->list_result = g_ptr_array_new_with_free_func (g_object_unref);
    self->task_ssm = fpi_ssm_new (FP_DEVICE (self),
                                  elan_list_run_state,
-@@ -649,6 +905,7 @@ elanmoc_match_report_cb (FpiDeviceElanmoc *self,
+@@ -649,6 +887,7 @@ elanmoc_match_report_cb (FpiDeviceElanmoc *self,
  {
    FpDevice *device = FP_DEVICE (self);
    FpPrint *print = NULL;
@@ -496,7 +478,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
    GPtrArray *prints;
    gboolean found = FALSE;
    guint index;
-@@ -659,7 +916,9 @@ elanmoc_match_report_cb (FpiDeviceElanmoc *self,
+@@ -659,7 +898,9 @@ elanmoc_match_report_cb (FpiDeviceElanmoc *self,
        return;
      }
  
@@ -507,7 +489,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
      {
        fpi_ssm_mark_failed (self->task_ssm,
                             fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-@@ -667,28 +926,91 @@ elanmoc_match_report_cb (FpiDeviceElanmoc *self,
+@@ -667,28 +908,81 @@ elanmoc_match_report_cb (FpiDeviceElanmoc *self,
        return;
      }
  
@@ -526,12 +508,6 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
  
    if (!print)
      {
-+      /*
-+       * A 0c5e sensor may contain fingerprints enrolled by Windows
-+       * or another implementation. The sensor can legitimately match
-+       * one of those slots, but it must never authenticate a Linux
-+       * libfprint identity.
-+       */
 +      if (!error &&
 +          g_usb_device_get_pid (
 +            fpi_device_get_usb_device (FP_DEVICE (self))) == 0x0c5e)
@@ -593,24 +569,20 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
 -    fpi_device_identify_report (device, NULL, print, NULL);
 +    {
 +      fpi_device_get_verify_data (device, &verify_print);
- 
--  fpi_device_identify_complete (device, NULL);
++
 +      if (fp_print_equal (verify_print, print))
 +        fpi_device_verify_report (device, FPI_MATCH_SUCCESS, print, NULL);
 +      else
 +        fpi_device_verify_report (device, FPI_MATCH_FAIL, print, NULL);
 +      fpi_device_verify_complete (device, NULL);
 +    }
-+
-+  /*
-+   * The matched-slot finger-info request is asynchronous.
-+   * Finish IDENTIFY_NUM_STATES only after reporting the final result.
-+   */
+ 
+-  fpi_device_identify_complete (device, NULL);
 +  fpi_ssm_next_state (self->task_ssm);
  }
  
  static void
-@@ -696,11 +1018,13 @@ identify_status_report (FpiDeviceElanmoc *self, int verify_status_id,
+@@ -696,11 +990,13 @@ identify_status_report (FpiDeviceElanmoc *self, int verify_status_id,
                          int data, GError *error)
  {
    FpDevice *device = FP_DEVICE (self);
@@ -626,7 +598,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
        return;
      }
  
-@@ -710,8 +1034,16 @@ identify_status_report (FpiDeviceElanmoc *self, int verify_status_id,
+@@ -710,8 +1006,16 @@ identify_status_report (FpiDeviceElanmoc *self, int verify_status_id,
        {
          if (data == ELAN_MSG_VERIFY_ERR)
            {
@@ -645,7 +617,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
            }
          else
            {
-@@ -730,24 +1062,35 @@ identify_status_report (FpiDeviceElanmoc *self, int verify_status_id,
+@@ -730,24 +1034,35 @@ identify_status_report (FpiDeviceElanmoc *self, int verify_status_id,
                  retry_error = fpi_device_retry_new (FP_DEVICE_RETRY_GENERAL);
                }
  
@@ -687,7 +659,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
    IDENTIFY_SET_MODE,
    IDENTIFY_WAIT_FINGER,
    IDENTIFY_NUM_STATES,
-@@ -761,19 +1104,48 @@ elanmoc_identify_cb (FpiDeviceElanmoc *self,
+@@ -761,19 +1076,40 @@ elanmoc_identify_cb (FpiDeviceElanmoc *self,
  {
    if (error)
      {
@@ -703,7 +675,6 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
 +        FP_DEVICE_ERROR_PROTO, "Malformed ELAN elanmoc_identify_cb reply (%zu bytes)", length_in));
 +      return;
 +    }
-+
 +
    if (buffer_in[1] == ELAN_MSG_VERIFY_ERR)
 -    identify_status_report (self, RSP_VERIFY_FAIL,
@@ -723,27 +694,20 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
 +
 +  if (buffer_in[1] <= ELAN_MAX_ENROLL_NUM)
 +    {
-+      /*
-+       * Successful sensor-side match.
-+       *
-+       * identify_status_report() starts an asynchronous finger-info
-+       * request. Do NOT complete IDENTIFY_NUM_STATES yet; the
-+       * elanmoc_match_report_cb() callback will finish the SSM after
-+       * the matched slot's identity has been processed.
-+       */
++      /* The SSM completes in elanmoc_match_report_cb(). */
 +      identify_status_report (self, RSP_VERIFY_OK,
 +                              buffer_in[1], error);
 +      return;
 +    }
-+
+ 
 +  identify_status_report (self, RSP_VERIFY_FAIL,
 +                          buffer_in[1], error);
- 
++
 +  fpi_ssm_next_state (self->task_ssm);
  }
  
  static void
-@@ -784,6 +1156,17 @@ elan_identify_run_state (FpiSsm *ssm, FpDevice *dev)
+@@ -784,6 +1120,17 @@ elan_identify_run_state (FpiSsm *ssm, FpDevice *dev)
    fp_info ("elanmoc %s ", __func__);
    switch (fpi_ssm_get_cur_state (ssm))
      {
@@ -761,7 +725,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
      case IDENTIFY_SET_MODE:
        fp_info ("elanmoc %s IDENTIFY_SET_MODE", __func__);
        cmd_buf = elanmoc_compose_cmd (&elanmoc_set_mod_cmd);
-@@ -792,9 +1175,40 @@ elan_identify_run_state (FpiSsm *ssm, FpDevice *dev)
+@@ -792,9 +1139,36 @@ elan_identify_run_state (FpiSsm *ssm, FpDevice *dev)
        break;
  
      case IDENTIFY_WAIT_FINGER:
@@ -773,10 +737,6 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
 +      if (g_usb_device_get_pid (
 +            fpi_device_get_usb_device (dev)) == 0x0c5e)
 +        {
-+          /*
-+           * ELAN 04f3:0c5e uses the older ARM-M4 identify
-+           * command: 40 ff 03.
-+           */
 +          fp_info ("elanmoc 04f3:0c5e: using legacy identify command");
 +
 +          cmd_buf = elanmoc_compose_cmd (
@@ -805,7 +765,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
        break;
      }
  }
-@@ -813,6 +1227,14 @@ elanmoc_enroll (FpDevice *device)
+@@ -813,6 +1187,14 @@ elanmoc_enroll (FpDevice *device)
    fpi_device_get_enroll_data (device, &print);
    user_id = fpi_print_generate_user_id (print);
    user_id_len = strlen (user_id);
@@ -820,7 +780,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
    user_id_len = MIN (ELAN_MAX_USER_ID_LEN, user_id_len);
  
    uid = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
-@@ -851,7 +1273,7 @@ elanmoc_delete_cb (FpiDeviceElanmoc *self,
+@@ -851,7 +1233,7 @@ elanmoc_delete_cb (FpiDeviceElanmoc *self,
        fpi_ssm_mark_failed (self->task_ssm, error);
        return;
      }
@@ -829,7 +789,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
      {
        fpi_ssm_mark_failed (self->task_ssm,
                             fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-@@ -875,11 +1297,124 @@ elan_delete_run_state (FpiSsm *ssm, FpDevice *dev)
+@@ -875,11 +1257,124 @@ elan_delete_run_state (FpiSsm *ssm, FpDevice *dev)
      case DELETE_SEND_CMD:
        cmd_buf = elanmoc_compose_cmd (&elanmoc_delete_cmd);
        memcpy (cmd_buf + 3, data, ELAN_USERDATE_SIZE);
@@ -955,7 +915,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
  static void
  elanmoc_delete_print (FpDevice *device)
  {
-@@ -895,13 +1430,19 @@ elanmoc_delete_print (FpDevice *device)
+@@ -895,13 +1390,19 @@ elanmoc_delete_print (FpDevice *device)
    fpi_device_get_delete_data (device, &print);
    g_object_get (print, "fpi-data", &data, NULL);
  
@@ -976,7 +936,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
    userid_buf = g_malloc0 (ELAN_USERDATE_SIZE);
  
    g_variant_get (data,
-@@ -939,6 +1480,7 @@ task_ssm_init_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+@@ -939,6 +1440,7 @@ task_ssm_init_done (FpiSsm *ssm, FpDevice *dev, GError *error)
  {
    FpiDeviceElanmoc *self = FPI_DEVICE_ELANMOC (dev);
  
@@ -984,7 +944,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
    if (error)
      g_usb_device_release_interface (fpi_device_get_usb_device (dev),
                                      0, 0, NULL);
-@@ -958,8 +1500,24 @@ elanmoc_cmd_ver_cb (FpiDeviceElanmoc *self,
+@@ -958,8 +1460,23 @@ elanmoc_cmd_ver_cb (FpiDeviceElanmoc *self,
        return;
      }
  
@@ -994,7 +954,6 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
 +        FP_DEVICE_ERROR_PROTO, "Malformed ELAN elanmoc_cmd_ver_cb reply (%zu bytes)", length_in));
 +      return;
 +    }
-+
 +
    self->fw_ver = (buffer_in[0] << 8 | buffer_in[1]);
    fp_info ("elanmoc  FW Version %x ", self->fw_ver);
@@ -1009,7 +968,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
    fpi_ssm_next_state (self->task_ssm);
  }
  
-@@ -975,8 +1533,23 @@ elanmoc_cmd_dim_cb (FpiDeviceElanmoc *self,
+@@ -975,8 +1492,22 @@ elanmoc_cmd_dim_cb (FpiDeviceElanmoc *self,
        return;
      }
  
@@ -1019,7 +978,6 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
 +        FP_DEVICE_ERROR_PROTO, "Malformed ELAN elanmoc_cmd_dim_cb reply (%zu bytes)", length_in));
 +      return;
 +    }
-+
 +
    self->x_trace = buffer_in[0];
    self->y_trace = buffer_in[2];
@@ -1033,7 +991,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
    fp_info ("elanmoc last_read DIM 0x%.2X(%d) 0x%.2X(%d)", self->x_trace, self->x_trace,
             self->y_trace, self->y_trace);
    fpi_ssm_next_state (self->task_ssm);
-@@ -996,6 +1569,14 @@ elanmoc_get_status_cb (FpiDeviceElanmoc *self,
+@@ -996,6 +1527,13 @@ elanmoc_get_status_cb (FpiDeviceElanmoc *self,
        return;
      }
  
@@ -1044,11 +1002,10 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
 +      return;
 +    }
 +
-+
    if (buffer_in[1] != 0x03 && self->cmd_retry_cnt != 0)
      {
        self->cmd_retry_cnt--;
-@@ -1004,7 +1585,7 @@ elanmoc_get_status_cb (FpiDeviceElanmoc *self,
+@@ -1004,7 +1542,7 @@ elanmoc_get_status_cb (FpiDeviceElanmoc *self,
      }
    else
      {
@@ -1057,7 +1014,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
          {
            fpi_ssm_mark_failed (self->task_ssm,
                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-@@ -1054,15 +1635,13 @@ dev_init_handler (FpiSsm *ssm, FpDevice *dev)
+@@ -1054,15 +1592,13 @@ dev_init_handler (FpiSsm *ssm, FpDevice *dev)
  }
  
  static void
@@ -1075,7 +1032,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
    if (!g_usb_device_claim_interface (fpi_device_get_usb_device (device), 0, 0, &error))
      goto error;
  
-@@ -1096,14 +1675,43 @@ error:
+@@ -1096,14 +1632,43 @@ error:
    fpi_device_open_complete (FP_DEVICE (self), error);
  }
  
@@ -1114,14 +1071,14 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
 -  g_usb_device_release_interface (fpi_device_get_usb_device (FP_DEVICE (self)), 0, 0, &error);
 -  fpi_device_close_complete (FP_DEVICE (self), error);
    self->task_ssm = NULL;
-+  /* A failed abort already owns an error. Never pass it as an output GError. */
++  /* error is already set: never reuse it as an out-parameter. */
 +  g_usb_device_release_interface (fpi_device_get_usb_device (dev), 0, 0,
 +                                  &release_error);
 +  fpi_device_close_complete (dev, error ? error : g_steal_pointer (&release_error));
  }
  
  static void
-@@ -1130,6 +1738,14 @@ elanmoc_close (FpDevice *device)
+@@ -1130,6 +1695,14 @@ elanmoc_close (FpDevice *device)
    fpi_ssm_start (self->task_ssm, task_ssm_exit_done);
  }
  
@@ -1136,7 +1093,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.c b/libfprint/drivers/elanmoc/ela
  static void
  fpi_device_elanmoc_init (FpiDeviceElanmoc *self)
  {
-@@ -1150,8 +1766,10 @@ fpi_device_elanmoc_class_init (FpiDeviceElanmocClass *klass)
+@@ -1150,8 +1723,10 @@ fpi_device_elanmoc_class_init (FpiDeviceElanmocClass *klass)
    dev_class->nr_enroll_stages = ELAN_MOC_ENROLL_TIMES;
    dev_class->temp_hot_seconds = -1;
  
@@ -1154,22 +1111,16 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.h b/libfprint/drivers/elanmoc/ela
  #define ELAN_EP_IMG_IN (0x2 | LIBUSB_ENDPOINT_IN)
  
  #define ELAN_MOC_CMD_TIMEOUT 5000
-+/* Conservative target bring-up delay; the minimum required time is unmeasured. */
++/* Conservative; the minimum is unmeasured. */
 +#define ELAN_LEGACY_RESET_DELAY_MS 2000
  #define ELAN_MOC_CAL_RETRY 500
  #define ELAN_MOC_ENROLL_TIMES 9
  #define ELAN_MAX_USER_ID_LEN 92
-@@ -91,6 +93,19 @@ static const struct elanmoc_cmd elanmoc_verify_cmd = {
+@@ -91,6 +93,13 @@ static const struct elanmoc_cmd elanmoc_verify_cmd = {
    .resp_len = 2,
  };
  
-+/*
-+ * Legacy ARM-M4 identify command.
-+ * Used by ELAN 04f3:0c5e.
-+ *
-+ * Response byte 1 contains either the matched slot or
-+ * a fingerprint status/error code.
-+ */
++/* 04f3:0c5e identify. Reply byte 1: matched slot or status code. */
 +static const struct elanmoc_cmd elanmoc_legacy_identify_cmd = {
 +  .cmd_header = {0x40, 0xff, 0x03},
 +  .cmd_len = 3,
@@ -1179,14 +1130,11 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.h b/libfprint/drivers/elanmoc/ela
  static const struct elanmoc_cmd elanmoc_above_cmd = {
    .cmd_header = {0x40, 0xff, 0x02},
    .cmd_len = 3,
-@@ -127,6 +142,16 @@ static const struct elanmoc_cmd elanmoc_get_userid_cmd = {
+@@ -127,6 +136,13 @@ static const struct elanmoc_cmd elanmoc_get_userid_cmd = {
    .resp_len = 97,
  };
  
-+/*
-+ * Legacy ARM-M4 finger-info command.
-+ * Used by ELAN 04f3:0c5e / firmware 0x3014.
-+ */
++/* 04f3:0c5e finger info, firmware 0x3014. */
 +static const struct elanmoc_cmd elanmoc_legacy_finger_info_cmd = {
 +  .cmd_header = {0x40, 0xff, 0x12},
 +  .cmd_len = 4,
@@ -1196,7 +1144,7 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc.h b/libfprint/drivers/elanmoc/ela
  static const struct elanmoc_cmd elanmoc_set_mod_cmd = {
    .cmd_header = {0x40, 0xff, 0x14},
    .cmd_len = 4,
-@@ -193,4 +218,5 @@ struct _FpiDeviceElanmoc
+@@ -193,4 +209,5 @@ struct _FpiDeviceElanmoc
    int             cmd_retry_cnt;
    int             list_index;
    GPtrArray      *list_result;
@@ -1206,11 +1154,8 @@ diff --git a/libfprint/drivers/elanmoc/elanmoc-legacy-storage.h b/libfprint/driv
 new file mode 100644
 --- /dev/null
 +++ b/libfprint/drivers/elanmoc/elanmoc-legacy-storage.h
-@@ -0,0 +1,33 @@
-+/* SPDX-License-Identifier: LGPL-2.1-or-later
-+ * Independently written legacy identity frame encoder. Wire length checked
-+ * against HP SP152998. This does not enumerate or export biometric templates.
-+ */
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#pragma once
 +#include <stddef.h>
 +#include <stdint.h>
@@ -1220,10 +1165,7 @@ new file mode 100644
 +#define ELAN_LEGACY_UID_MAX 57
 +#define ELAN_LEGACY_DELETE_SIZE 72
 +
-+/* This driver's identity is four zero bytes, UID length, UID, zero padding.
-+ * Only its own FP1 identity format is supported. Never substitute a slot tag
-+ * or retry using a clear-all command. Validation never partially writes out.
-+ */
++/* Frame: opcode, four zero bytes, UID length, FP1 UID, zero padding. */
 +static inline int
 +elan_legacy_build_identity (uint8_t opcode, const uint8_t *uid, size_t uid_size,
 +                            uint8_t output[ELAN_LEGACY_DELETE_SIZE])
@@ -1318,10 +1260,7 @@ diff --git a/tests/test-elanmoc-legacy-api.c b/tests/test-elanmoc-legacy-api.c
 new file mode 100644
 --- /dev/null
 +++ b/tests/test-elanmoc-legacy-api.c
-@@ -0,0 +1,268 @@
-+/* SPDX-License-Identifier: LGPL-2.1-or-later
-+ * Real driver + public API, synthetic GUsb only. No libusb initialization.
-+ */
+@@ -0,0 +1,264 @@
 +#include <drivers_api.h>
 +#include <execinfo.h>
 +#include <unistd.h>
@@ -1471,7 +1410,7 @@ new file mode 100644
 +  g_setenv ("FP_DEVICE_EMULATION", "1", TRUE);
 +  g_autoptr(GError) error = NULL;
 +  g_autoptr(GCancellable) verify_cancel = NULL;
-+  /* Bypass GInitable deliberately: no libusb context, discovery or hardware. */
++  /* No libusb context: synthetic devices only. */
 +  g_autoptr(GUsbContext) usb_context = g_object_new (G_USB_TYPE_CONTEXT, NULL);
 +  g_autoptr(JsonParser) parser = json_parser_new ();
 +  g_assert_true (json_parser_load_from_data (parser,
@@ -1504,7 +1443,6 @@ new file mode 100644
 +  g_assert_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_NOT_SUPPORTED);
 +  g_clear_error (&error);
 +  g_assert_cmpuint (info_reads, ==, 0);
-+  /* Own the template reference before passing its floating ref to enroll. */
 +  g_autoptr(FpPrint) template = g_object_ref_sink (fp_print_new (device));
 +  g_autofree gchar *long_username = g_strnfill (64, 'x');
 +  fp_print_set_username (template, mode ("long-user") ? long_username : "offline-test");
@@ -1583,7 +1521,7 @@ new file mode 100644
 +  else
 +    { g_assert_true (closed); g_assert_no_error (error); }
 +  g_print ("PASS full API + ownership/finalization: %s\n", scenario);
-+  /* Match FpContext disposal: break the synthetic context/device reference cycle. */
++  /* Break the context/device reference cycle, as FpContext does. */
 +  g_object_run_dispose (G_OBJECT (usb_context));
 +  return 0;
 +}
@@ -1591,10 +1529,7 @@ diff --git a/tests/test-elanmoc-security.c b/tests/test-elanmoc-security.c
 new file mode 100644
 --- /dev/null
 +++ b/tests/test-elanmoc-security.c
-@@ -0,0 +1,139 @@
-+/* SPDX-License-Identifier: LGPL-2.1-or-later
-+ * Deterministic mutation tests of the actual private parsers. Synthetic only.
-+ */
+@@ -0,0 +1,135 @@
 +#include <json-glib/json-glib.h>
 +#include "../libfprint/drivers/elanmoc/elanmoc.c"
 +
@@ -1700,7 +1635,6 @@ new file mode 100644
 +                memset (frame, fill, sizeof frame);
 +                check_frame (self, frame, length, modern); cases++;
 +              }
-+          /* Mutate each byte of both accepted legacy frame sizes. */
 +          if (!modern)
 +            for (guint length = 64; length <= 71; length += 7)
 +              for (guint offset = 0; offset < length; offset++)
